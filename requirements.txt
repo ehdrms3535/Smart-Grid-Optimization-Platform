@@ -1,0 +1,19 @@
+# Core application
+streamlit>=1.32
+pandas>=2.0
+numpy>=1.26
+plotly>=5.18
+requests>=2.31
+networkx>=3.2
+pydantic>=2.6
+
+# Forecasting and optimization
+scikit-learn>=1.4
+tensorflow>=2.15
+scipy>=1.12
+
+# AI integration
+openai>=1.30
+
+# Testing
+pytest>=8.0

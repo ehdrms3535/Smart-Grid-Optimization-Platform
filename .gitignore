@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+
+secrets/*
+!secrets/README.md
+!secrets/.gitkeep
+
+data/private/*
+!data/private/README.md
+!data/private/.gitkeep
+
+*.pem
+*.key
+*.crt
+*.p12
+service-account*.json
