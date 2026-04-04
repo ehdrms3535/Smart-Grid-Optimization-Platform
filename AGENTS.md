@@ -32,11 +32,11 @@
 15. `src/config/settings.py`
 
 ## 현재 저장소 상태
-- `pages/03_prediction.py`와 `src/services/prediction_service.py`는 목업 수준 구현이 있다.
+- `pages/03_prediction.py`와 `src/services/prediction_service.py`는 공통 시나리오와 fallback 메타데이터를 포함한 목업 수준 구현이 있다.
 - `src/services/monitoring_service.py`와 `src/services/simulation_service.py`는 공통 계약 기준의 mock 반환 뼈대가 구현되어 있다.
 - `pages/01_monitoring.py`와 `pages/02_simulation.py`는 서비스 결과를 바로 렌더링하는 mock 페이지가 구현되어 있다.
 - `Monitoring`과 `Simulation` 페이지는 Streamlit session state의 공통 `ScenarioContext`를 공유한다.
-- `Prediction` 페이지는 아직 기존 구현 기준이며 공통 `ScenarioContext` 공유는 다음 정리 대상이다.
+- `Prediction` 페이지도 같은 Streamlit session state의 `ScenarioContext`를 공유한다.
 - `src/data/schemas.py`가 페이지/서비스 간 공통 계약의 기준 파일이다.
 - `data/mock`에는 아직 실제 fixture 파일이 없다.
 - `src/engine/search/astar_router.py`, `src/engine/search/score_function.py`는 1주차용 mock 엔진 계약과 비용 요소 초안이 들어가 있다.
@@ -109,6 +109,36 @@
 - 서비스가 실제 계산을 못 해도 스키마 형식은 유지하고, 필요하면 `warnings`와 `fallback`에 이유를 남긴다.
 - 새 결과 타입이 필요하면 먼저 `src/data/schemas.py`에 추가하고 나서 서비스/페이지를 수정한다.
 
+## Streamlit Rerun 필수 고려사항
+- Streamlit은 위젯 상호작용마다 스크립트를 다시 실행하므로 rerun 구조를 기본 전제로 생각한다.
+- 페이지 간 공통 맥락은 가능하면 `st.session_state`에 저장하고 다시 읽는다.
+- rerun 때마다 `scenario_id`가 바뀌거나 결과가 불필요하게 재계산되지 않도록 주의한다.
+- mock 단계에서는 가벼운 재실행을 허용할 수 있지만, 실제 엔진이나 모델 연결 단계에서는 결과 캐시, 실행 버튼, `st.form`, `st.cache_data` 같은 수단을 검토한다.
+- 무거운 계산은 “rerun-safe”뿐 아니라 “rerun-optimized”한지까지 확인한다.
+- 새 페이지나 서비스 연결 작업을 할 때는 `초기 진입`, `위젯 변경`, `다른 페이지로 이동 후 복귀` 상황에서 상태가 어떻게 유지되는지 반드시 점검한다.
+
+## 서비스 인터페이스 정리 원칙
+- mock public 진입점은 가능하면 `run_mock_*` 패턴을 우선 사용한다.
+- 서비스 공통 입력 축은 `scenario`, `created_at`, `load_scale`다.
+- `SimulationService`는 도메인 입력이 많기 때문에 `SimulationInput`이 `scenario`와 `load_scale`를 감싼다.
+- 기존 호출부 호환이 필요하면 legacy 인자 이름을 alias 로 유지한다.
+  - `MonitoringService.get_monitoring_result(..., as_of=...)`
+  - `PredictionService.run_mock_prediction(..., forecast_start=...)`
+- 새 코드는 가능하면 `created_at` 이름을 우선 사용한다.
+
+## Fallback 규칙 초안
+- `mock_data`: 실제 데이터, 엔진, 모델, 외부 연동이 아직 없거나 연결되지 않았을 때 사용한다.
+- `baseline_model`: 고급 예측 모델이 실패하거나 준비되지 않았을 때 baseline 예측으로 내려간다.
+- `cached_result`: 재계산이 불가능하지만 직전 유효 결과를 재사용할 수 있을 때 사용한다.
+- `manual_override`: 운영자가 수동으로 값을 덮어써야 할 때 사용한다.
+- `map_2_5d`: 3D 지도 표현이 불안정할 때 2.5D/2D 표현으로 낮춘다.
+- `warnings` 첫 문구는 가능하면 `"<ServiceName>는 현재 \`<mode>\` fallback 결과를 반환합니다."` 형식을 따른다.
+- `fallback.reason`은 `실제 주 경로 대신 무엇을 사용했는지`를 한 문장으로 설명한다.
+- 현재 서비스별 fallback 기준:
+  - `MonitoringService`: `mock_data`
+  - `SimulationService`: `mock_data`
+  - `PredictionService`: `mock_data`
+
 ## 현재까지 진행된 작업
 - `1순위` 작업으로 공통 계약 스키마를 `src/data/schemas.py`에 추가했다.
 - 추가된 핵심 타입:
@@ -132,12 +162,15 @@
 - `astar_router.py`는 `RouteResult`를 반환하는 mock 경로 함수와 최소 입력 스펙을 제공한다.
 - `score_function.py`는 비용 요소 상수, `ScoreBreakdown` 계산, `RecommendationResult` 생성/정렬 계약을 제공한다.
 - `SimulationService`는 자체 route/score 계산을 하지 않고 search 엔진의 mock 계약 함수를 호출하도록 정리했다.
+- `Prediction` 공통화 작업으로 `PredictionService`가 `ScenarioContext`를 입력으로 받아 `PredictionResult.scenario`, `scenario_id`, `warnings`, `fallback`을 실제로 채우도록 정리했다.
+- `pages/03_prediction.py`는 Streamlit session state의 공통 `ScenarioContext`를 읽고 다시 저장하도록 수정했다.
+- 서비스 인터페이스 미세정리로 `MonitoringService.run_mock_monitoring()`을 public 진입점으로 추가하고, `created_at`를 공통 시간 인자로 맞췄다.
+- fallback 규칙 초안을 `AGENTS.md`에 문서화하고, 세 서비스의 첫 warning 문구를 `mock_data fallback` 형식으로 통일했다.
 
 ## 앞으로 작업할 때 우선순위
-1. `Monitoring`, `Simulation`, `Prediction`이 같은 `ScenarioContext`를 공유하도록 페이지 흐름을 맞춘다.
-2. mock 결과를 실제 엔진 결과로 치환하면서 `warnings`와 `fallback` 규칙을 유지한다.
-3. `A*`, 점수화, power flow 같은 엔진 구현으로 내려간다.
-4. 필요하면 `ScenarioService`에 시나리오 저장/불러오기 책임을 옮긴다.
+1. mock 결과를 실제 엔진 결과로 치환하면서 `warnings`와 `fallback` 규칙을 유지한다.
+2. `A*`, 점수화, power flow 같은 엔진 구현으로 내려간다.
+3. 필요하면 `ScenarioService`에 시나리오 저장/불러오기 책임을 옮긴다.
 
 ## 작업 타임라인 규칙
 - 작업 타임라인 기준 파일은 루트의 `WORK_TIMELINE.md`다.

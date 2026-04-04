@@ -125,7 +125,7 @@ class SimulationService:
         deltas = self._build_mock_deltas(resolved_input, recommendations[0] if recommendations else None)
 
         warnings = input_warnings + [
-            "SimulationService는 현재 search 엔진의 mock route/score 계약 함수를 사용합니다.",
+            "SimulationService는 현재 `mock_data` fallback 결과를 반환합니다.",
         ]
 
         return SimulationResult(
@@ -141,7 +141,7 @@ class SimulationService:
             fallback=FallbackInfo(
                 enabled=True,
                 mode="mock_data",
-                reason="실제 A* 탐색 대신 astar_router/score_function의 mock 계약 함수를 사용합니다.",
+                reason="실제 A* 탐색과 점수화 대신 search 엔진의 mock 계약 함수를 사용합니다.",
                 primary_path="src.engine.search.astar_router -> src.engine.search.score_function",
                 active_path="src.services.simulation_service.SimulationService.run_mock_simulation",
             ),

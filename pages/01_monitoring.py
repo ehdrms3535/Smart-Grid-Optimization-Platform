@@ -69,7 +69,7 @@ with st.sidebar:
 
 
 with st.spinner("모니터링 결과를 생성하는 중입니다..."):
-    result: MonitoringResult = service.get_monitoring_result(
+    result: MonitoringResult = service.run_mock_monitoring(
         scenario=_get_shared_scenario(),
         load_scale=load_scale,
     )

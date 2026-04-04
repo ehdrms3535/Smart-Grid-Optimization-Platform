@@ -36,23 +36,29 @@ _LINE_BLUEPRINTS: list[dict[str, float | str]] = [
 class MonitoringService:
     """모니터링 페이지용 mock 결과를 공통 계약 형식으로 조합한다."""
 
-    def get_monitoring_result(
+    def run_mock_monitoring(
         self,
         scenario: ScenarioContext | None = None,
         *,
+        created_at: datetime | None = None,
         as_of: datetime | None = None,
         load_scale: float = 1.0,
     ) -> MonitoringResult:
-        created_at = _round_to_hour(as_of or datetime.now())
-        resolved_scenario = self._resolve_scenario(scenario, created_at)
+        """Monitoring mock 결과의 기본 public 진입점.
+
+        created_at 을 공통 시간 인자로 우선 사용하고,
+        as_of 는 기존 호출부 호환용 alias 로 유지한다.
+        """
+        effective_created_at = _round_to_hour(created_at or as_of or datetime.now())
+        resolved_scenario = self._resolve_scenario(scenario, effective_created_at)
         line_statuses = self._build_mock_line_statuses(load_scale)
-        trend_points = self._build_mock_trend_points(created_at, load_scale)
+        trend_points = self._build_mock_trend_points(effective_created_at, load_scale)
         kpis = self._build_mock_kpis(line_statuses, trend_points)
         warnings = self._build_warnings(line_statuses)
 
         return MonitoringResult(
             scenario=resolved_scenario,
-            created_at=created_at,
+            created_at=effective_created_at,
             source="mock",
             kpis=kpis,
             line_statuses=line_statuses,
@@ -62,10 +68,26 @@ class MonitoringService:
             fallback=FallbackInfo(
                 enabled=True,
                 mode="mock_data",
-                reason="dc_power_flow 및 congestion_metrics 엔진이 아직 연결되지 않아 mock 결과를 사용합니다.",
+                reason="실제 powerflow/congestion 엔진 대신 MonitoringService의 mock 결과를 사용합니다.",
                 primary_path="src.engine.powerflow.dc_power_flow -> src.engine.powerflow.congestion_metrics",
-                active_path="src.services.monitoring_service.MonitoringService.get_monitoring_result",
+                active_path="src.services.monitoring_service.MonitoringService.run_mock_monitoring",
             ),
+        )
+
+    def get_monitoring_result(
+        self,
+        scenario: ScenarioContext | None = None,
+        *,
+        created_at: datetime | None = None,
+        as_of: datetime | None = None,
+        load_scale: float = 1.0,
+    ) -> MonitoringResult:
+        """기존 호출부 호환용 wrapper."""
+        return self.run_mock_monitoring(
+            scenario=scenario,
+            created_at=created_at,
+            as_of=as_of,
+            load_scale=load_scale,
         )
 
     def _resolve_scenario(
@@ -192,7 +214,7 @@ class MonitoringService:
         line_statuses: list[LineStatusSnapshot],
     ) -> list[str]:
         warnings = [
-            "MonitoringService는 현재 mock 계산 결과를 반환합니다.",
+            "MonitoringService는 현재 `mock_data` fallback 결과를 반환합니다.",
         ]
         critical_lines = [line.line_id for line in line_statuses if line.risk_level == "critical"]
         high_lines = [line.line_id for line in line_statuses if line.risk_level == "high"]
