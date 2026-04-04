@@ -70,6 +70,20 @@ _DEFAULT_CANDIDATES: dict[str, dict[str, float | str]] = {
 class SimulationService:
     """시뮬레이션 페이지용 mock 입력과 결과를 공통 계약 형식으로 맞춘다."""
 
+    def list_bus_options(self) -> list[tuple[str, str]]:
+        """페이지 입력용 버스 선택 옵션을 반환한다."""
+        return [
+            (bus_id, str(metadata["name"]))
+            for bus_id, metadata in _BUS_METADATA.items()
+        ]
+
+    def list_candidate_options(self) -> list[tuple[str, str]]:
+        """페이지 입력용 후보지 선택 옵션을 반환한다."""
+        return [
+            (candidate_id, str(candidate["label"]))
+            for candidate_id, candidate in _DEFAULT_CANDIDATES.items()
+        ]
+
     def build_default_input(
         self,
         scenario: ScenarioContext | None = None,

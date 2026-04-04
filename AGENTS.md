@@ -34,7 +34,9 @@
 ## 현재 저장소 상태
 - `pages/03_prediction.py`와 `src/services/prediction_service.py`는 목업 수준 구현이 있다.
 - `src/services/monitoring_service.py`와 `src/services/simulation_service.py`는 공통 계약 기준의 mock 반환 뼈대가 구현되어 있다.
-- `pages/01_monitoring.py`와 `pages/02_simulation.py`는 아직 거의 비어 있다.
+- `pages/01_monitoring.py`와 `pages/02_simulation.py`는 서비스 결과를 바로 렌더링하는 mock 페이지가 구현되어 있다.
+- `Monitoring`과 `Simulation` 페이지는 Streamlit session state의 공통 `ScenarioContext`를 공유한다.
+- `Prediction` 페이지는 아직 기존 구현 기준이며 공통 `ScenarioContext` 공유는 다음 정리 대상이다.
 - `src/data/schemas.py`가 페이지/서비스 간 공통 계약의 기준 파일이다.
 - `data/mock`에는 아직 실제 fixture 파일이 없다.
 - `src/domain`, `src/engine/search`, `src/engine/powerflow`의 다수 파일은 여전히 한 줄 스텁이다.
@@ -122,12 +124,15 @@
 - `MonitoringService`는 `MonitoringResult`를 직접 반환하며 KPI, 선로 상태, 추세 포인트, summary, warnings, fallback을 함께 만든다.
 - `SimulationService`는 `SimulationInput` 기본값 생성과 `SimulationResult` 반환 뼈대를 제공하며 route, recommendation, score, delta, summary, warnings, fallback을 함께 만든다.
 - 두 서비스 모두 같은 `ScenarioContext`를 넘기면 동일한 `scenario_id`를 유지하도록 맞췄다.
+- `3순위` 작업으로 `pages/01_monitoring.py`, `pages/02_simulation.py`를 서비스 호출 기반 페이지로 구현했다.
+- 두 페이지는 페이지 내부 mock 결과를 만들지 않고 각각 `MonitoringService`, `SimulationService`의 반환 객체만 렌더링한다.
+- `Monitoring`과 `Simulation`은 같은 Streamlit session state 키로 `ScenarioContext`를 공유한다.
 
 ## 앞으로 작업할 때 우선순위
-1. 각 페이지가 서비스만 호출하도록 정리한다.
-2. `Monitoring`, `Simulation`, `Prediction`이 같은 `ScenarioContext`를 공유하도록 페이지 흐름을 맞춘다.
-3. `A*`, 점수화, power flow 같은 엔진 구현으로 내려간다.
-4. mock 결과를 실제 엔진 결과로 치환하면서 `warnings`와 `fallback` 규칙을 유지한다.
+1. `Monitoring`, `Simulation`, `Prediction`이 같은 `ScenarioContext`를 공유하도록 페이지 흐름을 맞춘다.
+2. `A*`, 점수화, power flow 같은 엔진 구현으로 내려간다.
+3. mock 결과를 실제 엔진 결과로 치환하면서 `warnings`와 `fallback` 규칙을 유지한다.
+4. 필요하면 `ScenarioService`에 시나리오 저장/불러오기 책임을 옮긴다.
 
 ## 작업 타임라인 규칙
 - 작업 타임라인 기준 파일은 루트의 `WORK_TIMELINE.md`다.
