@@ -6,6 +6,80 @@ from datetime import datetime
 from typing import Literal
 
 
+# ── 모니터링 ──────────────────────────────────────────────────────────────────
+
+CongestionStatus = Literal["normal", "warning", "critical", "overload"]
+"""
+혼잡 상태 기준
+--------------
+normal   : 이용률 < 70%
+warning  : 70% <= 이용률 < 90%
+critical : 90% <= 이용률 < 100%
+overload : 이용률 >= 100%
+"""
+
+
+@dataclass
+class LineStatus:
+    """단일 송전선의 실시간 혼잡 상태.
+
+    입력 계약
+    ---------
+    DC Power Flow 계산 결과 또는 mock 데이터로부터 생성된다.
+
+    출력 계약
+    ---------
+    MonitoringResult.line_statuses 리스트의 원소로 사용된다.
+    """
+
+    line_id: str
+    from_bus: str
+    to_bus: str
+    from_bus_name: str
+    to_bus_name: str
+    flow_mw: float          # 실제 전력 흐름 (MW)
+    capacity_mw: float      # 열적 한계 용량 (MW)
+    utilization: float      # flow_mw / capacity_mw (0.0 ~ 1.0+)
+    status: CongestionStatus
+    loss_mw: float          # 추정 저항 손실 (MW)
+
+
+@dataclass
+class CongestionSummary:
+    """전체 선로에 대한 혼잡도 요약 통계.
+
+    MonitoringService 가 LineStatus 목록을 집계하여 생성한다.
+    """
+
+    total_lines: int
+    normal_count: int
+    warning_count: int
+    critical_count: int
+    overload_count: int
+    avg_utilization: float          # 전체 평균 이용률 (0.0 ~ 1.0)
+    total_loss_mw: float            # 전체 추정 손실 합계 (MW)
+    max_utilization: float          # 최대 이용률 (0.0 ~ 1.0+)
+    max_utilization_line_id: str    # 최대 이용률 선로 ID
+
+
+@dataclass
+class MonitoringResult:
+    """MonitoringService.run_mock_monitoring() 의 최종 반환값.
+
+    source 값
+    ----------
+    "mock"         : 합성 고정값 (1주차 기본값)
+    "dc_power_flow": DC Power Flow 계산 결과 (3단계 이후)
+    """
+
+    scenario_id: str
+    created_at: datetime
+    load_scale: float
+    line_statuses: list[LineStatus]
+    summary: CongestionSummary
+    source: Literal["mock", "dc_power_flow"]
+
+
 # ── 예측 피처 ─────────────────────────────────────────────────────────────────
 
 @dataclass
