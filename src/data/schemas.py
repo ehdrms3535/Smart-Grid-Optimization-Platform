@@ -6,6 +6,28 @@ from datetime import datetime
 from typing import Literal
 
 
+# ── 공통 타입 별칭 ─────────────────────────────────────────────────────────────
+
+CongestionStatus = Literal["normal", "warning", "critical", "overload"]
+"""
+이용률 기반 혼잡 상태
+---------------------
+normal   : 이용률 < 70%
+warning  : 70% <= 이용률 < 90%
+critical : 90% <= 이용률 < 100%
+overload : 이용률 >= 100%
+"""
+
+RiskLevel = Literal["low", "medium", "high", "critical"]
+"""
+위험도 레이블 (예측·추천 공통)
+------------------------------
+low      : 이용률 < 55%
+medium   : 55% <= 이용률 < 75%
+high     : 75% <= 이용률 < 90%
+critical : 이용률 >= 90%
+"""
+
 ResultSource = Literal[
     "mock",
     "baseline",
@@ -15,7 +37,7 @@ ResultSource = Literal[
     "astar",
     "manual",
 ]
-RiskLevel = Literal["low", "medium", "high", "critical"]
+
 FallbackMode = Literal[
     "none",
     "mock_data",
@@ -26,7 +48,7 @@ FallbackMode = Literal[
 ]
 
 
-# ── 공통 메타데이터 / 서비스 계약 ─────────────────────────────────────────────
+# ── 공통 메타데이터 ────────────────────────────────────────────────────────────
 
 @dataclass
 class FallbackInfo:
@@ -60,6 +82,8 @@ class TimeSeriesPoint:
     label: str = ""
 
 
+# ── 모니터링 ──────────────────────────────────────────────────────────────────
+
 @dataclass
 class MonitoringKpi:
     """모니터링 상단 KPI 카드의 단일 항목."""
@@ -67,24 +91,79 @@ class MonitoringKpi:
     metric_id: str
     label: str
     value: float
-    unit: str
+    unit: str                                           # "%", "MW", "lines" 등
     status: Literal["normal", "warning", "critical"] = "normal"
     delta: float | None = None
 
 
 @dataclass
-class LineStatusSnapshot:
-    """특정 시점의 선로 상태를 페이지/서비스 간 동일 형식으로 전달한다."""
+class LineStatus:
+    """단일 송전선의 실시간 혼잡 상태.
+
+    입력 계약
+    ---------
+    DC Power Flow 계산 결과 또는 mock 데이터로부터 생성된다.
+
+    출력 계약
+    ---------
+    MonitoringResult.line_statuses 리스트의 원소로 사용된다.
+    """
 
     line_id: str
     from_bus: str
     to_bus: str
     from_bus_name: str
     to_bus_name: str
-    flow_mw: float
-    utilization: float
-    risk_level: RiskLevel
+    flow_mw: float          # 실제 전력 흐름 (MW)
+    capacity_mw: float      # 열적 한계 용량 (MW)
+    utilization: float      # flow_mw / capacity_mw (0.0 ~ 1.0+)
+    status: CongestionStatus
+    risk_level: RiskLevel   # 예측·추천 서비스와 공유하는 위험도 레이블
+    loss_mw: float          # 추정 저항 손실 (MW)
 
+
+@dataclass
+class CongestionSummary:
+    """전체 선로에 대한 혼잡도 요약 통계.
+
+    MonitoringService 가 LineStatus 목록을 집계하여 생성한다.
+    """
+
+    total_lines: int
+    normal_count: int
+    warning_count: int
+    critical_count: int
+    overload_count: int
+    avg_utilization: float          # 전체 평균 이용률 (0.0 ~ 1.0)
+    total_loss_mw: float            # 전체 추정 손실 합계 (MW)
+    max_utilization: float          # 최대 이용률 (0.0 ~ 1.0+)
+    max_utilization_line_id: str    # 최대 이용률 선로 ID
+
+
+@dataclass
+class MonitoringResult:
+    """MonitoringService 의 공통 반환 형식.
+
+    source 값
+    ----------
+    "mock"         : 합성 고정값 (1주차 기본값)
+    "dc_power_flow": DC Power Flow 계산 결과 (3단계 이후)
+    """
+
+    scenario: ScenarioContext
+    created_at: datetime
+    source: ResultSource
+    load_scale: float
+    line_statuses: list[LineStatus]
+    congestion_summary: CongestionSummary
+    kpis: list[MonitoringKpi] = field(default_factory=list)
+    trend_points: list[TimeSeriesPoint] = field(default_factory=list)
+    summary: str = ""
+    warnings: list[str] = field(default_factory=list)
+    fallback: FallbackInfo = field(default_factory=lambda: FallbackInfo(enabled=False))
+
+
+# ── 시뮬레이션 ────────────────────────────────────────────────────────────────
 
 @dataclass
 class RoutePoint:
@@ -162,23 +241,8 @@ class SimulationInput:
 
 
 @dataclass
-class MonitoringResult:
-    """Monitoring 서비스의 공통 반환 형식."""
-
-    scenario: ScenarioContext
-    created_at: datetime
-    source: ResultSource
-    kpis: list[MonitoringKpi] = field(default_factory=list)
-    line_statuses: list[LineStatusSnapshot] = field(default_factory=list)
-    trend_points: list[TimeSeriesPoint] = field(default_factory=list)
-    summary: str = ""
-    warnings: list[str] = field(default_factory=list)
-    fallback: FallbackInfo = field(default_factory=lambda: FallbackInfo(enabled=False))
-
-
-@dataclass
 class SimulationResult:
-    """Simulation 서비스의 공통 반환 형식."""
+    """SimulationService 의 공통 반환 형식."""
 
     scenario: ScenarioContext
     created_at: datetime
