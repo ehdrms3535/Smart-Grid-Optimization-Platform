@@ -89,7 +89,7 @@ def calculate_score(
     policy_risk = round(score_input.policy_risk * POLICY_RISK_FACTOR, 1)
 
     notes = [
-        "현재 점수는 route 반영 v1 가중치로 계산됩니다.",
+        "현재 점수는 보정된 A* 경로 기준 가중치로 계산됩니다.",
         (
             f"사용 거리 {resolved_distance_km:.1f}km"
             + (

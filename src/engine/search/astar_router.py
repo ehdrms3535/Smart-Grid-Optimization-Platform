@@ -47,6 +47,16 @@ class _RouteNodeSpec:
     longitude: float
 
 
+@dataclass(frozen=True, slots=True)
+class _RoutePlanVariant:
+    plan_name: str
+    path_node_ids: list[str]
+    total_distance_km: float
+    calibrated_distance_km: float
+    repeated_node_count: int
+    relay_hop_count: int
+
+
 def build_mock_route(
     start_bus: BusNodeSpec,
     end_bus: BusNodeSpec,
@@ -179,31 +189,46 @@ def build_astar_route(
         load_scale=load_scale,
     )
 
-    leg_pairs = _build_leg_pairs(start_bus, end_bus, candidate, via_bus)
-    path_node_ids: list[str] = []
-    total_distance_km = 0.0
-
-    for leg_start, leg_end in leg_pairs:
-        leg_path, leg_distance = _run_astar_leg(
-            start_id=leg_start,
-            end_id=leg_end,
+    route_variants = [
+        _build_route_variant(
+            plan_name="direct",
+            leg_pairs=_build_leg_pairs(start_bus, end_bus, candidate, via_bus=None),
             route_nodes=route_nodes,
             adjacency=adjacency,
+            load_scale=load_scale,
         )
-        total_distance_km += leg_distance
-        path_node_ids = _merge_path_ids(path_node_ids, leg_path)
+    ]
+    if via_bus is not None:
+        route_variants.append(
+            _build_route_variant(
+                plan_name="via_hub",
+                leg_pairs=_build_leg_pairs(start_bus, end_bus, candidate, via_bus=via_bus),
+                route_nodes=route_nodes,
+                adjacency=adjacency,
+                load_scale=load_scale,
+            )
+        )
 
+    selected_variant = min(route_variants, key=lambda variant: variant.calibrated_distance_km)
+    path_node_ids = selected_variant.path_node_ids
     waypoints = [_to_route_point_from_node(route_nodes[node_id]) for node_id in path_node_ids]
     estimated_cost = _estimate_route_cost(
-        total_distance_km=total_distance_km,
+        total_distance_km=selected_variant.total_distance_km,
+        calibrated_distance_km=selected_variant.calibrated_distance_km,
         construction_cost=candidate.construction_cost,
-        load_scale=load_scale,
+        repeated_node_count=selected_variant.repeated_node_count,
     )
 
     summary_parts = [f"{start_bus.label}에서 {end_bus.label}까지"]
-    if via_bus is not None:
-        summary_parts.append(f"{via_bus.label} 허브를 포함해")
-    summary_parts.append(f"{candidate.candidate_label} 후보지를 경유하는 A* 최소 경로입니다.")
+    if selected_variant.plan_name == "via_hub" and via_bus is not None:
+        summary_parts.append(f"{via_bus.label} 허브를 포함한")
+    else:
+        summary_parts.append("허브 우회보다 직결 비용이 낮은")
+    summary_parts.append(
+        f"{candidate.candidate_label} 후보지 경유 A* 보정 경로입니다."
+    )
+    if selected_variant.repeated_node_count > 0:
+        summary_parts.append("반복 노드 패널티를 반영해 루프 경로를 배제했습니다.")
 
     return RouteResult(
         route_id=f"astar-{candidate.candidate_id.lower()}",
@@ -211,7 +236,7 @@ def build_astar_route(
         end_bus_id=end_bus.bus_id,
         path_node_ids=path_node_ids,
         waypoints=waypoints,
-        total_distance_km=round(total_distance_km, 1),
+        total_distance_km=round(selected_variant.total_distance_km, 1),
         estimated_cost=estimated_cost,
         source="astar",
         summary=" ".join(summary_parts),
@@ -339,6 +364,49 @@ def _build_leg_pairs(
     ]
 
 
+def _build_route_variant(
+    *,
+    plan_name: str,
+    leg_pairs: list[tuple[str, str]],
+    route_nodes: dict[str, _RouteNodeSpec],
+    adjacency: dict[str, list[tuple[str, float, float]]],
+    load_scale: float,
+) -> _RoutePlanVariant:
+    path_node_ids: list[str] = []
+    total_distance_km = 0.0
+    straight_line_distance_km = 0.0
+
+    for leg_start, leg_end in leg_pairs:
+        leg_path, leg_distance = _run_astar_leg(
+            start_id=leg_start,
+            end_id=leg_end,
+            route_nodes=route_nodes,
+            adjacency=adjacency,
+        )
+        total_distance_km += leg_distance
+        straight_line_distance_km += _heuristic_cost(route_nodes, leg_start, leg_end)
+        path_node_ids = _merge_path_ids(path_node_ids, leg_path)
+
+    repeated_node_count = len(path_node_ids) - len(set(path_node_ids))
+    relay_hop_count = max(0, len(path_node_ids) - (len(leg_pairs) + 1))
+    calibrated_distance_km = _calibrate_route_distance(
+        total_distance_km=total_distance_km,
+        straight_line_distance_km=straight_line_distance_km,
+        relay_hop_count=relay_hop_count,
+        repeated_node_count=repeated_node_count,
+        load_scale=load_scale,
+    )
+
+    return _RoutePlanVariant(
+        plan_name=plan_name,
+        path_node_ids=path_node_ids,
+        total_distance_km=total_distance_km,
+        calibrated_distance_km=calibrated_distance_km,
+        repeated_node_count=repeated_node_count,
+        relay_hop_count=relay_hop_count,
+    )
+
+
 def _run_astar_leg(
     *,
     start_id: str,
@@ -417,12 +485,35 @@ def _merge_path_ids(existing_path: list[str], new_path: list[str]) -> list[str]:
 def _estimate_route_cost(
     *,
     total_distance_km: float,
+    calibrated_distance_km: float,
     construction_cost: float,
+    repeated_node_count: int,
+) -> float:
+    repeat_penalty = repeated_node_count * 3.5
+    distance_basis = max(total_distance_km, calibrated_distance_km)
+    estimated_cost = (distance_basis * 0.44) + (construction_cost * 4.6) + repeat_penalty
+    return round(estimated_cost, 1)
+
+
+def _calibrate_route_distance(
+    *,
+    total_distance_km: float,
+    straight_line_distance_km: float,
+    relay_hop_count: int,
+    repeated_node_count: int,
     load_scale: float,
 ) -> float:
-    load_penalty = max(0.0, load_scale - 1.0) * 15.0
-    estimated_cost = (total_distance_km * 0.44) + (construction_cost * 4.6) + load_penalty
-    return round(estimated_cost, 1)
+    detour_km = max(0.0, total_distance_km - straight_line_distance_km)
+    relay_penalty_km = relay_hop_count * 6.0
+    repeated_penalty_km = repeated_node_count * 40.0
+    load_penalty_km = max(0.0, load_scale - 1.0) * 12.0
+    return (
+        total_distance_km
+        + (detour_km * 0.8)
+        + relay_penalty_km
+        + repeated_penalty_km
+        + load_penalty_km
+    )
 
 
 def _heuristic_cost(

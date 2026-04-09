@@ -10,7 +10,11 @@ from src.services.result_metadata import (
     build_fallback_warning,
 )
 from src.data.schemas import (
+    FallbackInfo,
+    MonitoringResult,
     RecommendationResult,
+    ResultSource,
+    RouteResult,
     ScenarioContext,
     ScoreBreakdown,
     SimulationDelta,
@@ -132,24 +136,19 @@ class SimulationService:
     ) -> SimulationResult:
         resolved_at = _round_to_hour(created_at or datetime.now())
         resolved_input, input_warnings = self._normalize_input(simulation_input, resolved_at)
-        recommendations = self._build_mock_recommendations(resolved_input)
-        selected_route = recommendations[0].route if recommendations else None
-        deltas = self._build_mock_deltas(resolved_input, recommendations[0] if recommendations else None)
+        recommendations = self._build_recommendations(resolved_input, use_actual_route=False)
+        deltas = self._build_mock_deltas(
+            resolved_input,
+            recommendations[0] if recommendations else None,
+        )
 
-        warnings = input_warnings + [
-            build_fallback_warning("SimulationService", "mock_data"),
-        ]
-
-        return SimulationResult(
-            scenario=resolved_input.scenario,
+        return self._build_result(
+            simulation_input=resolved_input,
             created_at=resolved_at,
             source="mock",
-            simulation_input=resolved_input,
-            selected_route=selected_route,
             recommendations=recommendations,
             deltas=deltas,
-            summary=self._build_summary(resolved_input, recommendations, deltas),
-            warnings=warnings,
+            warnings=input_warnings + [build_fallback_warning("SimulationService", "mock_data")],
             fallback=build_fallback_info(
                 mode="mock_data",
                 reason="실제 A* 탐색과 점수화 대신 search 엔진의 mock 계약 함수를 사용합니다.",
@@ -164,7 +163,7 @@ class SimulationService:
         *,
         created_at: datetime | None = None,
     ) -> SimulationResult:
-        """2주차용 실제 A* + 점수화 v1 진입점.
+        """4주차용 보정 A* + 통합 시뮬레이션 진입점.
 
         설치 전 baseline은 MonitoringService의 DC Power Flow를 사용하고,
         설치 후 delta는 추천안 기반 heuristic counterfactual로 계산한다.
@@ -174,62 +173,24 @@ class SimulationService:
         resolved_input, input_warnings = self._normalize_input(simulation_input, resolved_at)
 
         try:
-            recommendations = self._build_recommendations_v1(resolved_input)
-            selected_route = recommendations[0].route if recommendations else None
-
-            monitoring_before = MonitoringService().run_dc_power_flow(
-                scenario=resolved_input.scenario,
-                load_scale=resolved_input.load_scale,
+            recommendations = self._build_recommendations(resolved_input, use_actual_route=True)
+            monitoring_before = self._get_monitoring_baseline(
+                simulation_input=resolved_input,
                 created_at=resolved_at,
             )
-            use_actual_baseline = not monitoring_before.fallback.enabled and monitoring_before.source == "dc_power_flow"
+            deltas, delta_warnings, fallback = self._resolve_deltas(
+                simulation_input=resolved_input,
+                recommendations=recommendations,
+                monitoring_before=monitoring_before,
+            )
 
-            if use_actual_baseline:
-                deltas = self._build_actual_deltas(
-                    monitoring_before=monitoring_before,
-                    top_recommendation=recommendations[0] if recommendations else None,
-                )
-                warnings = input_warnings + [
-                    build_fallback_warning("SimulationService", "mock_data"),
-                    "설치 전 baseline은 DC Power Flow 결과를 사용하고, 설치 후 delta는 heuristic counterfactual로 계산합니다.",
-                ]
-                fallback = build_fallback_info(
-                    mode="mock_data",
-                    reason="설치 후 counterfactual 전력 흐름은 아직 실제 power flow 대신 heuristic 계산을 사용합니다.",
-                    primary_path="src.engine.powerflow.dc_power_flow -> counterfactual power flow",
-                    active_path="src.services.simulation_service.SimulationService._build_actual_deltas",
-                )
-            else:
-                deltas = self._build_mock_deltas(
-                    resolved_input,
-                    recommendations[0] if recommendations else None,
-                )
-                warnings = input_warnings + [
-                    build_fallback_warning("SimulationService", "mock_data"),
-                    "경로 탐색과 점수화는 A* v1을 사용하고, 설치 전후 비교 delta는 mock 규칙을 사용합니다.",
-                ]
-                fallback = build_fallback_info(
-                    mode="mock_data",
-                    reason="설치 전 baseline DC Power Flow가 준비되지 않아 설치 전후 비교 delta는 mock 규칙을 사용합니다.",
-                    primary_path="src.engine.powerflow.dc_power_flow -> src.engine.powerflow.congestion_metrics",
-                    active_path="src.services.simulation_service.SimulationService._build_mock_deltas",
-                )
-
-                if monitoring_before.fallback.enabled:
-                    warnings.append(
-                        "설치 전 baseline Monitoring 결과가 fallback이라 비교 delta도 mock 규칙으로 유지합니다."
-                    )
-
-            return SimulationResult(
-                scenario=resolved_input.scenario,
+            return self._build_result(
+                simulation_input=resolved_input,
                 created_at=resolved_at,
                 source="astar",
-                simulation_input=resolved_input,
-                selected_route=selected_route,
                 recommendations=recommendations,
                 deltas=deltas,
-                summary=self._build_summary(resolved_input, recommendations, deltas),
-                warnings=warnings,
+                warnings=input_warnings + delta_warnings,
                 fallback=fallback,
             )
 
@@ -305,11 +266,15 @@ class SimulationService:
             warnings,
         )
 
-    def _build_mock_recommendations(
+    def _build_recommendations(
         self,
         simulation_input: SimulationInput,
+        *,
+        use_actual_route: bool,
     ) -> list[RecommendationResult]:
         scored_recommendations: list[RecommendationResult] = []
+        bus_nodes = self._build_bus_nodes() if use_actual_route else []
+        bus_edges = self._build_bus_edges(bus_nodes) if use_actual_route else []
         start_bus = _to_bus_node_spec(simulation_input.start_bus_id)
         end_bus = _to_bus_node_spec(simulation_input.end_bus_id)
         hub_bus_id = "BUS_007" if simulation_input.end_bus_id != "BUS_007" else "BUS_010"
@@ -317,24 +282,26 @@ class SimulationService:
 
         for index, candidate_id in enumerate(simulation_input.candidate_site_ids):
             candidate = _get_candidate(candidate_id, index)
-            route = build_mock_route(
+            route = self._build_candidate_route(
+                simulation_input=simulation_input,
+                candidate_id=candidate_id,
+                candidate=candidate,
                 start_bus=start_bus,
                 end_bus=end_bus,
-                candidate=_to_route_candidate_spec(candidate_id, candidate),
-                via_bus=hub_bus,
+                hub_bus=hub_bus,
+                bus_nodes=bus_nodes,
+                bus_edges=bus_edges,
+                use_actual_route=use_actual_route,
+            )
+            score_input = self._build_candidate_score_input(
+                candidate_id=candidate_id,
+                candidate=candidate,
                 load_scale=simulation_input.load_scale,
             )
-            score = calculate_mock_score(
-                CandidateScoreInput(
-                    candidate_id=candidate_id,
-                    candidate_label=str(candidate["label"]),
-                    distance_km=float(candidate["distance_km"]),
-                    construction_cost=float(candidate["construction_cost"]),
-                    congestion_relief=float(candidate["congestion_relief"]),
-                    environmental_risk=float(candidate["environmental_risk"]),
-                    policy_risk=float(candidate["policy_risk"]),
-                    load_scale=simulation_input.load_scale,
-                )
+            score = (
+                calculate_score(score_input, route=route)
+                if use_actual_route
+                else calculate_mock_score(score_input)
             )
             scored_recommendations.append(
                 build_recommendation(
@@ -348,53 +315,137 @@ class SimulationService:
 
         return rank_recommendations(scored_recommendations)
 
-    def _build_recommendations_v1(
+    def _build_candidate_route(
         self,
+        *,
         simulation_input: SimulationInput,
-    ) -> list[RecommendationResult]:
-        scored_recommendations: list[RecommendationResult] = []
-        bus_nodes = self._build_bus_nodes()
-        bus_edges = self._build_bus_edges(bus_nodes)
-        start_bus = _to_bus_node_spec(simulation_input.start_bus_id)
-        end_bus = _to_bus_node_spec(simulation_input.end_bus_id)
-        hub_bus_id = "BUS_007" if simulation_input.end_bus_id != "BUS_007" else "BUS_010"
-        hub_bus = _to_bus_node_spec(hub_bus_id)
-
-        for index, candidate_id in enumerate(simulation_input.candidate_site_ids):
-            candidate = _get_candidate(candidate_id, index)
-            route = build_astar_route(
+        candidate_id: str,
+        candidate: dict[str, float | str],
+        start_bus: BusNodeSpec,
+        end_bus: BusNodeSpec,
+        hub_bus: BusNodeSpec,
+        bus_nodes: list[BusNodeSpec],
+        bus_edges: list[GraphEdgeSpec],
+        use_actual_route: bool,
+    ) -> RouteResult:
+        candidate_spec = _to_route_candidate_spec(candidate_id, candidate)
+        if use_actual_route:
+            return build_astar_route(
                 start_bus=start_bus,
                 end_bus=end_bus,
-                candidate=_to_route_candidate_spec(candidate_id, candidate),
+                candidate=candidate_spec,
                 bus_nodes=bus_nodes,
                 edges=bus_edges,
                 via_bus=hub_bus,
                 load_scale=simulation_input.load_scale,
             )
-            score = calculate_score(
-                CandidateScoreInput(
-                    candidate_id=candidate_id,
-                    candidate_label=str(candidate["label"]),
-                    distance_km=float(candidate["distance_km"]),
-                    construction_cost=float(candidate["construction_cost"]),
-                    congestion_relief=float(candidate["congestion_relief"]),
-                    environmental_risk=float(candidate["environmental_risk"]),
-                    policy_risk=float(candidate["policy_risk"]),
-                    load_scale=simulation_input.load_scale,
-                ),
-                route=route,
-            )
-            scored_recommendations.append(
-                build_recommendation(
-                    candidate_id=candidate_id,
-                    candidate_label=str(candidate["label"]),
-                    route=route,
-                    score=score,
-                    rationale=self._build_rationale(simulation_input, candidate, score),
-                )
-            )
 
-        return rank_recommendations(scored_recommendations)
+        return build_mock_route(
+            start_bus=start_bus,
+            end_bus=end_bus,
+            candidate=candidate_spec,
+            via_bus=hub_bus,
+            load_scale=simulation_input.load_scale,
+        )
+
+    def _build_candidate_score_input(
+        self,
+        *,
+        candidate_id: str,
+        candidate: dict[str, float | str],
+        load_scale: float,
+    ) -> CandidateScoreInput:
+        return CandidateScoreInput(
+            candidate_id=candidate_id,
+            candidate_label=str(candidate["label"]),
+            distance_km=float(candidate["distance_km"]),
+            construction_cost=float(candidate["construction_cost"]),
+            congestion_relief=float(candidate["congestion_relief"]),
+            environmental_risk=float(candidate["environmental_risk"]),
+            policy_risk=float(candidate["policy_risk"]),
+            load_scale=load_scale,
+        )
+
+    def _get_monitoring_baseline(
+        self,
+        *,
+        simulation_input: SimulationInput,
+        created_at: datetime,
+    ) -> MonitoringResult:
+        return MonitoringService().run_dc_power_flow(
+            scenario=simulation_input.scenario,
+            load_scale=simulation_input.load_scale,
+            created_at=created_at,
+        )
+
+    def _resolve_deltas(
+        self,
+        *,
+        simulation_input: SimulationInput,
+        recommendations: list[RecommendationResult],
+        monitoring_before: MonitoringResult,
+    ) -> tuple[list[SimulationDelta], list[str], FallbackInfo]:
+        top_recommendation = recommendations[0] if recommendations else None
+        warnings = [build_fallback_warning("SimulationService", "mock_data")]
+        use_actual_baseline = (
+            not monitoring_before.fallback.enabled
+            and monitoring_before.source == "dc_power_flow"
+        )
+
+        if use_actual_baseline:
+            deltas = self._build_actual_deltas(
+                monitoring_before=monitoring_before,
+                top_recommendation=top_recommendation,
+            )
+            warnings.append(
+                "설치 전 baseline은 DC Power Flow 결과를 사용하고, 설치 후 delta는 heuristic counterfactual로 계산합니다."
+            )
+            fallback = build_fallback_info(
+                mode="mock_data",
+                reason="설치 후 counterfactual 전력 흐름은 아직 실제 power flow 대신 heuristic 계산을 사용합니다.",
+                primary_path="src.engine.powerflow.dc_power_flow -> counterfactual power flow",
+                active_path="src.services.simulation_service.SimulationService._build_actual_deltas",
+            )
+            return deltas, warnings, fallback
+
+        deltas = self._build_mock_deltas(simulation_input, top_recommendation)
+        warnings.append("경로 탐색과 점수화는 보정된 A* 경로를 사용하고, 설치 전후 비교 delta는 mock 규칙을 사용합니다.")
+        if monitoring_before.fallback.enabled:
+            warnings.append(
+                "설치 전 baseline Monitoring 결과가 fallback이라 비교 delta도 mock 규칙으로 유지합니다."
+            )
+        fallback = build_fallback_info(
+            mode="mock_data",
+            reason="설치 전 baseline DC Power Flow가 준비되지 않아 설치 전후 비교 delta는 mock 규칙을 사용합니다.",
+            primary_path="src.engine.powerflow.dc_power_flow -> src.engine.powerflow.congestion_metrics",
+            active_path="src.services.simulation_service.SimulationService._build_mock_deltas",
+        )
+        return deltas, warnings, fallback
+
+    def _build_result(
+        self,
+        *,
+        simulation_input: SimulationInput,
+        created_at: datetime,
+        source: ResultSource,
+        recommendations: list[RecommendationResult],
+        deltas: list[SimulationDelta],
+        warnings: list[str],
+        fallback: FallbackInfo,
+    ) -> SimulationResult:
+        selected_route = recommendations[0].route if recommendations else None
+        return SimulationResult(
+            scenario=simulation_input.scenario,
+            created_at=created_at,
+            source=source,
+            simulation_input=simulation_input,
+            selected_route=selected_route,
+            recommendations=recommendations,
+            deltas=deltas,
+            summary=self._build_summary(simulation_input, recommendations, deltas),
+            warnings=warnings,
+            fallback=fallback,
+        )
 
     def _build_rationale(
         self,
