@@ -176,6 +176,13 @@
   - `python3 -c "import runpy; runpy.run_path('pages/02_simulation.py'); print('simulation-page-run-ok')"`
 - 다음 작업: `Beta`가 지도 오버레이를 붙일 때 `map_2_5d` fallback 규칙을 그대로 사용하고, `Simulation` 설치 후 counterfactual을 실제 power flow로 바꾸는 작업은 이후 통합 병목 제거 단계에서 진행
 
+### 2026-04-10 예측 문서에 GNN 병렬 활용 계획 반영
+- 작업: `AGENTS.md`와 `meeting_plan/MEETING_PLAN_2026-03-30.md`의 예측 계획을 `LSTM` 단일 중심에서 `LSTM+GNN` 병렬 활용 기준으로 확장했다. `PredictionService` 책임, forecast 엔진 후보, Gamma 역할, 주차별 예측 작업, fallback 문구를 함께 정리했다.
+- 수정 파일: `AGENTS.md`, `meeting_plan/MEETING_PLAN_2026-03-30.md`, `WORK_TIMELINE.md`
+- 검증:
+  - `Select-String -Path AGENTS.md, meeting_plan/MEETING_PLAN_2026-03-30.md -Pattern 'GNN','LSTM' -Encoding UTF8`
+- 다음 작업: `Prediction` 실제 구현 단계에서 `feature/graph` 입력 계약과 `LSTM/GNN` 병렬 결과 결합 규칙을 `src/data/schemas.py`와 예측 서비스 인터페이스 기준으로 구체화한다.
+
 ### MVP 완성 이후 예정 - AI 경로 최적화 학습/검증
 - 작업: MVP 기능이 완성되면 AI 기반 송전망 경로 최적화를 위해 최적화와 학습을 반복 수행하고, 추천 품질이 실제로 개선되는지 검증한다. 기준 시나리오 대비 경로 비용, 혼잡 완화, 설치 제약 충족률, 재현성, fallback 전환 조건을 함께 점검한다.
 - 수정 파일: `미정 (예상 범위: src/engine/search/*, src/engine/optimize/*, src/services/simulation_service.py, 검증 문서)`

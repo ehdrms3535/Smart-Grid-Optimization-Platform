@@ -18,7 +18,7 @@
 | 박차오름 |공통 코어/통합 메인 | `A*`, 점수화 로직, 공통 인터페이스 설계, 서비스 간 연결, 최종 통합, fallback 결정, 병목 해결 |
 | Alpha |Monitoring 메인 | `dc_power_flow`, `congestion_metrics`, 모니터링 페이지, 모니터링 서비스, KPI 정의, 차트/표/상태 시각화 |
 | Beta |Simulation 메인 | 후보지 입력 UI, 설치 전후 비교 UI, 시나리오 흐름, 지도 오버레이, 시뮬레이션 서비스 연결 |
-| Gamma |Prediction 메인 | `feature_builder`, baseline 또는 `LSTM`, 예측 페이지, 예측 서비스, 위험도/설명 출력, 테스트/QA 리드 |
+| Gamma |Prediction 메인 | `feature_builder`, baseline 또는 `LSTM+GNN` 병렬 예측, 예측 페이지, 예측 서비스, 위험도/설명 출력, 테스트/QA 리드 |
 
 ## 4. 역할 분배 의도
 - 박차오름은 모든 걸 혼자 만드는 사람이 아니라 `공통 코어와 통합 병목`을 잡는 중심 역할이다.
@@ -51,8 +51,8 @@
 #### Gamma
 - 예측 그래프 mock 완성
 - 위험도 카드/설명 카드 mock 완성
-- feature 입력 포맷 정의
-- 테스트용 시계열 샘플 데이터 준비
+- feature/graph 입력 포맷 정의
+- 테스트용 시계열/그래프 샘플 데이터 준비
 
 #### 1주차 완료 기준
 - 세 페이지가 모두 열린다.
@@ -79,9 +79,9 @@
 - 후보지별 비교 UI 정리
 
 #### Gamma
-- baseline 또는 LSTM 최소 버전 구현
+- baseline 또는 `LSTM+GNN` 병렬 최소 버전 구현
 - 예측 결과를 페이지에 연결
-- baseline/LSTM 결과 전환 구조 정리
+- baseline/LSTM/GNN 결과 전환 및 병렬 조합 구조 정리
 - 테스트 출력값 형식 정리
 
 #### 2주차 완료 기준
@@ -129,7 +129,7 @@
 - 비교 결과 가독성 개선
 
 #### Gamma
-- LSTM 본 연결 또는 baseline 고도화
+- LSTM 본 연결과 GNN 병렬 연결 또는 baseline 고도화
 - 예측 품질 개선
 - QA 리드
 
@@ -151,7 +151,7 @@
 - 시나리오 흐름 정리
 
 #### Gamma
-- 예측 실패 시 baseline 전환
+- LSTM/GNN 예측 실패 시 baseline 전환
 - 설명/그래프 안정화
 
 #### 5주차 완료 기준
@@ -180,7 +180,7 @@
 4. 1주차 작업 확정, 20분
    - 각자 금요일에 보여줄 산출물 1개를 말하게 한다.
 5. fallback 규칙 확정, 10분
-   - 3D 실패 시 2.5D, LSTM 지연 시 baseline으로 간다.
+   - 3D 실패 시 2.5D, `LSTM+GNN` 병렬 예측이 지연되면 baseline으로 간다.
 6. 운영 규칙 확정, 10분
    - 일일 체크인, 주간 데모, 코드 리뷰, 막힘 공유 규칙을 정한다.
 
@@ -194,7 +194,7 @@
 
 ## 8. fallback 규칙
 - 3D가 `2026-04-05`까지 안정적으로 안 되면 `2.5D`로 전환한다.
-- LSTM이 지연되면 baseline 예측으로 먼저 연결한다.
+- `LSTM+GNN` 병렬 예측이 지연되면 baseline 예측으로 먼저 연결한다.
 - 외부 API가 불안정하면 mock data로 데모를 유지한다.
 
 ## 9. 이 배정안의 장점

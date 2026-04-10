@@ -68,7 +68,7 @@
 ## 서비스 책임 구조
 - `MonitoringService`: 현재 상태, KPI, 혼잡도, 선로 상태, 차트 입력을 만든다.
 - `SimulationService`: 후보지 입력, 경로 결과, 추천 결과, 설치 전후 비교를 만든다.
-- `PredictionService`: 부하 예측, 위험 선로, 설명 출력을 만든다.
+- `PredictionService`: baseline, `LSTM`, `GNN` 예측 흐름을 조율하고 부하 예측, 위험 선로, 설명 출력을 만든다.
 - `ScenarioService`: 시나리오 저장/불러오기/비교를 맡을 예정이지만 아직 비어 있다.
 - `OptimizationService`: ESS/운영 최적화 확장용이다. MVP 필수 범위는 아니다.
 
@@ -78,7 +78,8 @@
 - `search/astar_router.py`: 후보 경로 탐색 엔진.
 - `search/score_function.py`: 추천 점수화 엔진.
 - `forecast/feature_builder.py`: 예측 피처 생성 엔진.
-- `forecast/lstm_forecaster.py`: LSTM 예측 엔진.
+- `forecast/lstm_forecaster.py`: LSTM 시계열 예측 엔진.
+- `forecast/gnn_forecaster.py` 또는 동급 모듈: GNN 기반 그래프-시계열 예측 엔진 후보다. 필요 시 `LSTM`과 병렬로 실행해 예측 결과를 비교하거나 조합한다.
 - `optimize/ess_optimizer.py`: ESS 최적화 엔진.
 - `explain/xai_reporter.py`: 설명 생성 계층 후보.
 
