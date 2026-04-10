@@ -1,18 +1,16 @@
-# 신규 송전탑 설치 시뮬레이션 페이지를 구성한다.
 from __future__ import annotations
-
 from datetime import datetime
-
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
 
-from src.data.schemas import ScenarioContext, SimulationInput, SimulationResult
-from src.services.simulation_service import SimulationService
+# 오름님이 만든 엔진 모듈 임포트
+from src.engine.powerflow.dc_power_flow import solve, build_default_buses, build_default_line_inputs
 
+st.set_page_config(page_title="시뮬레이션 | SGOP", layout="wide")
 
+<<<<<<< Updated upstream
 st.set_page_config(
     page_title="시뮬레이션 | SGOP",
     page_icon="🗺️",
@@ -104,7 +102,7 @@ simulation_input = SimulationInput(
 )
 
 with st.spinner("시뮬레이션 결과를 생성하는 중입니다..."):
-    result: SimulationResult = service.run_mock_simulation(simulation_input)
+    result: SimulationResult = service.run_simulation(simulation_input)
 
 st.session_state.sgop_shared_scenario = result.scenario
 
@@ -156,124 +154,97 @@ col_left, col_right = st.columns([1.1, 1.2])
 
 with col_left:
     st.subheader("🗺️ 선정 경로 (지도 시각화)")
+=======
+# --- 1. 혼잡도에 따른 색상 결정 함수 (나현님 파트) ---
+def get_congestion_color(flow_mw, capacity_mw):
+    """흐름량과 용량을 비교해 색상을 반환합니다."""
+    if capacity_mw <= 0: return "#9ca3af" # 용량 정보 없음
+>>>>>>> Stashed changes
     
-    if result.selected_route is None or not result.selected_route.waypoints:
-        st.info("표시할 경로 정보가 없습니다.")
+    # 혼잡도 계산 (%)
+    congestion = (abs(flow_mw) / capacity_mw) * 100
+    
+    if congestion >= 80:
+        return "#ef4444"  # 빨간색 (80% 이상: 위험)
+    elif congestion >= 50:
+        return "#eab308"  # 노란색 (50~80%: 주의)
     else:
-        # 1. 경로를 그리기 위해 [위도, 경도] 쌍의 리스트를 만듭니다.
-        route_coords = [
-            [waypoint.latitude, waypoint.longitude]
-            for waypoint in result.selected_route.waypoints
-        ]
-        
-        # 2. 지도가 처음 켜질 때 중심을 잡아줄 좌표를 설정합니다. (경로의 시작점)
-        center_lat = route_coords[0][0]
-        center_lon = route_coords[0][1]
-        
-        # 3. 브이월드 또는 기본 오픈스트리트맵(OSM) 기반 Folium 지도 생성
-        # (tiles='CartoDB positron'을 쓰면 피그마 디자인처럼 깔끔하고 밝은 테마가 나옵니다)
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles='CartoDB positron')
-        
-        # 4. 지도 위에 오름님이 계산한 A* 경로 선(PolyLine) 그리기
-        folium.PolyLine(
-            locations=route_coords,
-            color="#2563eb",  # 예쁜 파란색
-            weight=5,
-            opacity=0.8,
-            tooltip="선정된 A* 최적 경로"
-        ).add_to(m)
-        
-        # 5. 시작점, 종료점, 후보지 등 각 노드에 마커 찍기
-        for waypoint in result.selected_route.waypoints:
-            # 기본 마커 대신 예쁜 동그라미 마커 사용
-            folium.CircleMarker(
-                location=[waypoint.latitude, waypoint.longitude],
-                radius=6, # 마커 크기
-                popup=f"<b>{waypoint.label}</b><br>({waypoint.point_id})",
-                tooltip=waypoint.label,
-                color="#ef4444", # 테두리 빨간색
-                fill=True,
-                fill_color="#ef4444",
-                fill_opacity=1.0
-            ).add_to(m)
+        return "#22c55e"  # 초록색 (50% 미만: 원활)
+
+# --- 2. 사이드바 입력창 ---
+with st.sidebar:
+    st.header("⚡ 시뮬레이션 제어")
+    load_scale = st.slider("시스템 전체 부하 배율", 0.5, 1.5, 1.0, 0.05)
+    st.caption("부하를 높이면 선로 혼잡도가 실시간으로 계산됩니다.")
+
+st.title("🗺️ 송전망 혼잡도 실시간 시뮬레이션")
+
+# --- 3. 엔진 가동 (박차오름님 파트 호출) ---
+# 기본 버스와 선로 데이터를 가져와서 실제 전력 흐름을 계산합니다.
+buses = build_default_buses(load_scale=load_scale)
+lines = build_default_line_inputs()
+result = solve(buses, lines)
+
+if not result.converged:
+    st.error(f"계산 실패: {result.error}")
+    st.stop()
+
+# --- 4. 메인 화면 레이아웃 ---
+col_map, col_info = st.columns([2, 1])
+
+with col_map:
+    st.subheader("📍 실시간 계통 혼잡 지도")
+    
+    # 지도 초기 위치 (서울 중심)
+    m = folium.Map(location=[37.5665, 126.9780], zoom_start=10, tiles='CartoDB positron')
+    
+    # 노드(Bus) 정보를 사전 형태로 변환 (위치 찾기용)
+    # 실제 프로젝트에서는 DB나 다른 스키마에서 위경도를 가져와야 합니다.
+    # 여기서는 예시 좌표를 사용합니다.
+    bus_coords = {
+        "B01": [37.78, 127.48], "B02": [37.85, 127.05], "B03": [37.24, 127.17],
+        "B04": [37.01, 127.21], "B05": [36.93, 126.88], "B06": [37.55, 127.12],
+        "B07": [37.36, 127.11], "B08": [37.54, 127.18], "B09": [37.26, 127.02],
+        "B10": [37.38, 126.81], "B11": [37.52, 126.65], "B12": [37.49, 127.05],
+        "B13": [37.60, 127.03]
+    }
+
+    # 선로(Line) 그리기 및 색상 입히기
+    for line in lines:
+        if line.from_bus in bus_coords and line.to_bus in bus_coords:
+            start_pos = bus_coords[line.from_bus]
+            end_pos = bus_coords[line.to_bus]
             
-        # 6. 완성된 지도를 Streamlit 화면에 띄우기
-        # returned_objects=[] 로 설정하면 지도를 클릭해도 불필요한 재계산(rerun)이 돌지 않습니다.
-        st_folium(m, width=600, height=400, returned_objects=[])
+            # 엔진 결과에서 현재 선로의 흐름량(MW) 가져오기
+            current_flow = result.line_flows.get(line.line_id, 0)
+            # 혼잡도 색상 결정
+            line_color = get_congestion_color(current_flow, line.capacity_mw)
+            
+            # 지도에 선 그리기
+            folium.PolyLine(
+                locations=[start_pos, end_pos],
+                color=line_color,
+                weight=5,
+                opacity=0.8,
+                tooltip=f"선로: {line.line_id} | 흐름: {abs(current_flow)}MW / {line.capacity_mw}MW"
+            ).add_to(m)
 
-with col_right:
-    st.subheader("설치 전후 비교")
-    delta_df = pd.DataFrame(
-        [
-            {
-                "metric_id": delta.metric_id,
-                "지표": delta.label,
-                "설치 전": delta.before_value,
-                "설치 후": delta.after_value,
-                "개선량": delta.improvement,
-                "단위": delta.unit,
-                "상태": delta.status,
-            }
-            for delta in result.deltas
-        ]
-    )
+    st_folium(m, width="100%", height=500, returned_objects=[])
 
-    if delta_df.empty:
-        st.info("표시할 비교 결과가 없습니다.")
+with col_info:
+    st.subheader("📊 주요 지표")
+    
+    # 가장 혼잡한 선로 찾기
+    max_line_id = max(result.line_flows, key=lambda k: abs(result.line_flows[k]))
+    max_flow = abs(result.line_flows[max_line_id])
+    
+    # 현재 부하 상태 표시
+    st.metric("전체 부하 배율", f"{load_scale:.2f}x")
+    st.metric("최대 조류 선로", f"{max_line_id}", f"{max_flow} MW")
+    
+    st.divider()
+    st.write("**💡 분석 리포트**")
+    if load_scale > 1.2:
+        st.warning("⚠️ 부하가 높아 일부 구간에 병목 현상이 발생하고 있습니다. 신규 송전탑 설치 제안이 필요합니다.")
     else:
-        delta_fig = go.Figure()
-        delta_fig.add_trace(
-            go.Bar(
-                x=delta_df["지표"],
-                y=delta_df["개선량"],
-                marker_color=[
-                    "#2ca02c" if status == "improved" else "#ff7f0e" if status == "unchanged" else "#d62728"
-                    for status in delta_df["상태"]
-                ],
-                hovertemplate="%{x}<br>%{y:.1f}<extra></extra>",
-                name="개선량",
-            )
-        )
-        delta_fig.update_layout(
-            height=360,
-            margin={"t": 20, "b": 80},
-            yaxis_title="개선량",
-            showlegend=False,
-        )
-        st.plotly_chart(delta_fig, width="stretch")
-
-st.divider()
-st.subheader("추천안 비교")
-
-recommendation_df = pd.DataFrame(
-    [
-        {
-            "순위": recommendation.rank,
-            "후보지": recommendation.candidate_label,
-            "총점": recommendation.score.total_score if recommendation.score else None,
-            "거리(km)": recommendation.route.total_distance_km if recommendation.route else None,
-            "예상 비용": recommendation.route.estimated_cost if recommendation.route else None,
-            "혼잡 완화": recommendation.score.congestion_relief if recommendation.score else None,
-            "환경 리스크": recommendation.score.environmental_risk if recommendation.score else None,
-            "정책 리스크": recommendation.score.policy_risk if recommendation.score else None,
-        }
-        for recommendation in result.recommendations
-    ]
-)
-
-if recommendation_df.empty:
-    st.info("추천안이 없습니다.")
-else:
-    st.dataframe(recommendation_df, width="stretch", hide_index=True)
-
-for recommendation in result.recommendations:
-    with st.expander(f"{recommendation.rank}위 {recommendation.candidate_label}"):
-        st.write(recommendation.rationale)
-        if recommendation.route is not None:
-            st.write(recommendation.route.summary)
-            st.caption(
-                "경로 노드: " + " -> ".join(recommendation.route.path_node_ids)
-            )
-        if recommendation.score is not None and recommendation.score.notes:
-            for note in recommendation.score.notes:
-                st.caption(f"- {note}")
+        st.success("✅ 현재 계통은 안정적인 상태입니다.")

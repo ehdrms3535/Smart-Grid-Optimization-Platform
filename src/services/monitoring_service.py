@@ -7,12 +7,22 @@ from datetime import datetime, timedelta
 
 from src.data.schemas import (
     CongestionSummary,
-    FallbackInfo,
     LineStatus,
     MonitoringKpi,
     MonitoringResult,
     ScenarioContext,
     TimeSeriesPoint,
+)
+from src.engine.powerflow import dc_power_flow as _dcpf
+from src.engine.powerflow.congestion_metrics import (
+    compute_congestion_summary,
+    compute_line_statuses,
+)
+from src.services.result_metadata import (
+    build_fallback_info,
+    build_fallback_warning,
+    build_no_fallback_info,
+    build_source_warning,
 )
 
 # ── 한국 345kV 주요 버스 (13개) ────────────────────────────────────────────────
@@ -209,7 +219,7 @@ def _build_summary_text(cs: CongestionSummary, lines: list[LineStatus]) -> str:
 
 
 def _build_warnings(lines: list[LineStatus]) -> list[str]:
-    warnings = ["MonitoringService는 현재 mock_data fallback 결과를 반환합니다."]
+    warnings = [build_fallback_warning("MonitoringService", "mock_data")]
     critical = [l.line_id for l in lines if l.risk_level == "critical"]
     high = [l.line_id for l in lines if l.risk_level == "high"]
     if critical:
@@ -283,14 +293,80 @@ class MonitoringService:
             trend_points=trend,
             summary=_build_summary_text(cs, lines),
             warnings=_build_warnings(lines),
-            fallback=FallbackInfo(
-                enabled=True,
+            fallback=build_fallback_info(
                 mode="mock_data",
                 reason="실제 dc_power_flow 엔진 대신 mock 결과를 사용합니다.",
                 primary_path="src.engine.powerflow.dc_power_flow",
                 active_path="src.services.monitoring_service.MonitoringService.run_mock_monitoring",
             ),
         )
+
+    def run_dc_power_flow(
+        self,
+        scenario: ScenarioContext | None = None,
+        load_scale: float = 1.0,
+        *,
+        created_at: datetime | None = None,
+    ) -> MonitoringResult:
+        """DC Power Flow 계산으로 MonitoringResult 를 생성한다.
+
+        DC 계산이 실패하면 자동으로 run_mock_monitoring() 으로 fallback 한다.
+
+        Parameters
+        ----------
+        scenario:
+            공유 시나리오 컨텍스트. None 이면 기본 시나리오를 생성한다.
+        load_scale:
+            전체 부하 배율. 1.0 = 기준 부하.
+        created_at:
+            결과 기준 시각. None 이면 현재 시각을 사용한다.
+        """
+        now = _round_to_hour(created_at or datetime.now())
+        resolved_scenario = self._resolve_scenario(scenario, now)
+
+        try:
+            buses = _dcpf.build_default_buses(load_scale)
+            lines = _dcpf.build_default_line_inputs()
+            dc_result = _dcpf.solve(buses, lines)
+
+            if not dc_result.converged:
+                raise RuntimeError(dc_result.error)
+
+            line_statuses = compute_line_statuses(dc_result)
+            cs = compute_congestion_summary(line_statuses)
+            trend = _build_trend_points(load_scale, now)
+
+            return MonitoringResult(
+                scenario=resolved_scenario,
+                created_at=now,
+                source="dc_power_flow",
+                load_scale=load_scale,
+                line_statuses=line_statuses,
+                congestion_summary=cs,
+                kpis=_build_kpis(cs, trend),
+                trend_points=trend,
+                summary=_build_summary_text(cs, line_statuses),
+                warnings=[build_source_warning("MonitoringService", "dc_power_flow")],
+                fallback=build_no_fallback_info(),
+            )
+
+        except Exception as exc:  # noqa: BLE001
+            fallback_result = self.run_mock_monitoring(
+                scenario=resolved_scenario,
+                load_scale=load_scale,
+                created_at=created_at,
+            )
+            fallback_result.warnings.insert(
+                0,
+                f"DC Power Flow 실패 → mock fallback 전환. 원인: {exc}",
+            )
+            fallback_result.fallback = build_fallback_info(
+                mode="mock_data",
+                reason=str(exc),
+                primary_path="src.engine.powerflow.dc_power_flow.solve",
+                active_path="src.services.monitoring_service.MonitoringService.run_mock_monitoring",
+            )
+            return fallback_result
 
     def get_monitoring_result(
         self,
