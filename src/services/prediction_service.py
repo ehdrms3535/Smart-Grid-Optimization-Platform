@@ -152,6 +152,104 @@ class PredictionService:
             ),
         )
 
+    def run_baseline_prediction(
+        self,
+        raw_dir: str,
+        load_scale: float = 1.0,
+        forecast_start: datetime | None = None,
+        scenario: ScenarioContext | None = None,
+    ) -> PredictionResult:
+        """KPX 실데이터 기반 baseline 예측 결과를 반환한다.
+
+        Parameters
+        ----------
+        raw_dir        : sukub*.csv 가 있는 디렉터리 경로
+        load_scale     : 부하 배율
+        forecast_start : 예측 기준 시각 (None 이면 현재 시각)
+        """
+        from src.data.adapters.public_data_adapter import load_kpx_csvs
+        from src.engine.forecast.baseline_forecaster import BaselineForecaster
+
+        now = (forecast_start or datetime.now()).replace(minute=0, second=0, microsecond=0)
+        resolved_scenario = self._resolve_scenario(scenario, now)
+
+        load_df = load_kpx_csvs(raw_dir)
+        if load_scale != 1.0:
+            load_df = load_df.copy()
+            load_df["load_mw"] = load_df["load_mw"] * load_scale
+
+        forecaster = BaselineForecaster().fit(load_df)
+        predictions = forecaster.predict(forecast_start=now)
+        risk_lines = self._compute_risk_lines(predictions, load_scale)
+        summary = self._build_summary(now, predictions, risk_lines)
+
+        return PredictionResult(
+            scenario_id=resolved_scenario.scenario_id,
+            created_at=now,
+            load_scale=load_scale,
+            forecast_horizon_h=24,
+            predictions=predictions,
+            risk_lines=risk_lines,
+            summary=summary,
+            source="baseline",
+            scenario=resolved_scenario,
+            warnings=[],
+            fallback=FallbackInfo(enabled=False),
+        )
+
+    def run_lstm_prediction(
+        self,
+        raw_dir: str,
+        load_scale: float = 1.0,
+        forecast_start: datetime | None = None,
+        scenario: ScenarioContext | None = None,
+        retrain: bool = False,
+        epochs: int = 20,
+    ) -> PredictionResult:
+        """LSTM 학습/추론 기반 24시간 예측 결과를 반환한다.
+
+        Parameters
+        ----------
+        raw_dir        : sukub*.csv 가 있는 디렉터리 경로
+        load_scale     : 부하 배율
+        forecast_start : 예측 기준 시각 (None 이면 현재 시각)
+        retrain        : True 이면 저장된 모델 무시하고 재학습
+        epochs         : 재학습 시 에포크 수
+        """
+        from src.data.adapters.public_data_adapter import load_kpx_with_weather
+        from src.engine.forecast.lstm_forecaster import LSTMForecaster
+
+        now = (forecast_start or datetime.now()).replace(minute=0, second=0, microsecond=0)
+        resolved_scenario = self._resolve_scenario(scenario, now)
+
+        load_df = load_kpx_with_weather(raw_dir)
+
+        forecaster = LSTMForecaster()
+        if retrain or not forecaster.is_trained():
+            forecaster.fit(load_df, epochs=epochs)
+
+        if load_scale != 1.0:
+            load_df = load_df.copy()
+            load_df["load_mw"] = load_df["load_mw"] * load_scale
+
+        predictions = forecaster.predict(history_df=load_df, forecast_start=now)
+        risk_lines = self._compute_risk_lines(predictions, load_scale)
+        summary = self._build_summary(now, predictions, risk_lines)
+
+        return PredictionResult(
+            scenario_id=resolved_scenario.scenario_id,
+            created_at=now,
+            load_scale=load_scale,
+            forecast_horizon_h=24,
+            predictions=predictions,
+            risk_lines=risk_lines,
+            summary=summary,
+            source="lstm",
+            scenario=resolved_scenario,
+            warnings=[],
+            fallback=FallbackInfo(enabled=False),
+        )
+
     # ── 내부 ──────────────────────────────────────────────────────────────────
 
     def _generate_predictions(
