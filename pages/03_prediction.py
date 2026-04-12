@@ -56,9 +56,33 @@ def _get_shared_scenario() -> ScenarioContext:
     st.session_state.sgop_shared_scenario = scenario
     return scenario
 
+_RAW_DIR = str(
+    __import__("pathlib").Path(__file__).resolve().parents[1] / "data" / "raw"
+)
+
 # ── 사이드바 ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("예측 설정")
+
+    model_source = st.radio(
+        "예측 모델",
+        options=["Mock", "Baseline", "LSTM"],
+        index=0,
+        help=(
+            "Mock: 합성 패턴 (즉시)\n"
+            "Baseline: KPX 실데이터 시간대 평균 (빠름)\n"
+            "LSTM: KPX 실데이터 신경망 예측 (학습 필요)"
+        ),
+    )
+
+    if model_source == "LSTM":
+        retrain = st.checkbox("모델 재학습", value=False,
+                              help="체크 시 저장된 모델을 무시하고 재학습합니다.")
+        epochs = st.slider("에포크", 5, 50, 20, step=5)
+    else:
+        retrain, epochs = False, 20
+
+    st.divider()
 
     load_scale = st.slider(
         "부하 배율",
@@ -88,19 +112,51 @@ if "pred_scale" not in st.session_state:
 shared_scenario = _get_shared_scenario()
 cached_result = st.session_state.pred_result
 
-if (
-    run_btn
-    or cached_result is None
-    or cached_result.scenario is None
-    or cached_result.scenario.scenario_id != shared_scenario.scenario_id
-):
-    with st.spinner("예측 계산 중..."):
-        svc = PredictionService()
-        st.session_state.pred_result = svc.run_mock_prediction(
-            load_scale=load_scale,
-            scenario=shared_scenario,
-        )
-        st.session_state.pred_scale = load_scale
+source_changed = (
+    st.session_state.get("pred_source") != model_source
+)
+
+if run_btn or cached_result is None or source_changed:
+    svc = PredictionService()
+
+    if model_source == "Baseline":
+        spinner_msg = "KPX 실데이터 로딩 및 Baseline 예측 중..."
+        with st.spinner(spinner_msg):
+            try:
+                st.session_state.pred_result = svc.run_baseline_prediction(
+                    raw_dir=_RAW_DIR,
+                    load_scale=load_scale,
+                    scenario=shared_scenario,
+                )
+            except Exception as e:
+                st.error(f"Baseline 예측 실패: {e}")
+                st.stop()
+
+    elif model_source == "LSTM":
+        spinner_msg = "LSTM 모델 학습/추론 중... (수 분 소요될 수 있습니다)"
+        with st.spinner(spinner_msg):
+            try:
+                st.session_state.pred_result = svc.run_lstm_prediction(
+                    raw_dir=_RAW_DIR,
+                    load_scale=load_scale,
+                    forecast_start=None,
+                    scenario=shared_scenario,
+                    retrain=retrain,
+                    epochs=epochs,
+                )
+            except Exception as e:
+                st.error(f"LSTM 예측 실패: {e}")
+                st.stop()
+
+    else:  # Mock
+        with st.spinner("Mock 예측 중..."):
+            st.session_state.pred_result = svc.run_mock_prediction(
+                load_scale=load_scale,
+                scenario=shared_scenario,
+            )
+
+    st.session_state.pred_scale = load_scale
+    st.session_state.pred_source = model_source
 
 result: PredictionResult = st.session_state.pred_result
 if result.scenario is not None:
