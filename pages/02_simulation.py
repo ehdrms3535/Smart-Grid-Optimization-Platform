@@ -1,270 +1,142 @@
-# 신규 송전탑 설치 시뮬레이션 페이지를 구성한다.
 from __future__ import annotations
-
-from datetime import datetime
-
-import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
+import folium
+from streamlit_folium import st_folium
 
-from src.data.schemas import ScenarioContext, SimulationInput, SimulationResult
+# 오름님의 엔진 및 서비스 모듈 임포트
+from src.engine.powerflow.dc_power_flow import solve, build_default_buses, build_default_line_inputs
 from src.services.simulation_service import SimulationService
 
+st.set_page_config(page_title="시뮬레이션 | SGOP", layout="wide")
 
-st.set_page_config(
-    page_title="시뮬레이션 | SGOP",
-    page_icon="🗺️",
-    layout="wide",
-)
+# --- 1. 서비스 초기화 ---
+sim_service = SimulationService()
+bus_options = sim_service.list_bus_options()
+candidate_options = sim_service.list_candidate_options()
 
+def get_congestion_color(flow_mw, capacity_mw):
+    if capacity_mw <= 0: return "#9ca3af"
+    congestion = (abs(flow_mw) / capacity_mw) * 100
+    if congestion >= 80: return "#ef4444"  # 빨강
+    elif congestion >= 50: return "#eab308" # 노랑
+    else: return "#22c55e" # 초록
 
-def _get_shared_scenario() -> ScenarioContext:
-    scenario = st.session_state.get("sgop_shared_scenario")
-    if isinstance(scenario, ScenarioContext):
-        return scenario
-
-    created_at = datetime.now().replace(minute=0, second=0, microsecond=0)
-    scenario = ScenarioContext(
-        scenario_id="sgop-demo-scenario",
-        title="SGOP Demo Scenario",
-        description="Monitoring과 Simulation이 공유하는 기본 시나리오",
-        region="South Korea",
-        created_at=created_at,
-        created_by="streamlit-session",
-    )
-    st.session_state.sgop_shared_scenario = scenario
-    return scenario
-
-
-service = SimulationService()
-bus_options = service.list_bus_options()
-candidate_options = service.list_candidate_options()
-bus_ids = [bus_id for bus_id, _ in bus_options]
-candidate_ids = [candidate_id for candidate_id, _ in candidate_options]
-bus_labels = {bus_id: f"{name} ({bus_id})" for bus_id, name in bus_options}
-candidate_labels = {
-    candidate_id: f"{label} ({candidate_id})"
-    for candidate_id, label in candidate_options
-}
-
+# --- 2. 사이드바 입력창 (SimulationService 연동) ---
 with st.sidebar:
-    st.header("시뮬레이션 입력")
-    start_bus_id = st.selectbox(
-        "시작 버스",
-        options=bus_ids,
-        index=bus_ids.index("BUS_001"),
-        format_func=lambda bus_id: bus_labels[bus_id],
+    st.header("⚡ 시뮬레이션 제어")
+    start_bus = st.selectbox("시작 버스", options=[b[0] for b in bus_options], format_func=lambda x: dict(bus_options)[x], index=0)
+    end_bus = st.selectbox("종료 버스", options=[b[0] for b in bus_options], format_func=lambda x: dict(bus_options)[x], index=10)
+    
+    selected_candidates = st.multiselect(
+        "경유 후보지 선택", 
+        options=[c[0] for c in candidate_options],
+        default=[c[0] for c in candidate_options],
+        format_func=lambda x: dict(candidate_options)[x]
     )
-    end_bus_id = st.selectbox(
-        "종료 버스",
-        options=bus_ids,
-        index=bus_ids.index("BUS_011"),
-        format_func=lambda bus_id: bus_labels[bus_id],
-    )
-    candidate_site_ids = st.multiselect(
-        "후보지",
-        options=candidate_ids,
-        default=candidate_ids,
-        format_func=lambda candidate_id: candidate_labels[candidate_id],
-    )
-    load_scale = st.slider(
-        "부하 배율",
-        min_value=0.80,
-        max_value=1.30,
-        value=1.00,
-        step=0.05,
-    )
-    notes = st.text_area(
-        "시나리오 메모",
-        value="주요 혼잡 구간 우회와 운영 여유도 확보를 목표로 한 mock 시뮬레이션",
-        height=120,
-    )
-    st.caption("페이지는 SimulationService 입력/출력 계약만 사용합니다.")
+    
+    load_scale = st.slider("시스템 전체 부하 배율", 0.5, 1.5, 1.0, 0.05)
 
+st.title("🗺️ 송전망 혼잡도 및 A* 최적 경로 시뮬레이션")
 
-st.title("🗺️ 송전탑 설치 시뮬레이션")
+# --- 3. 엔진 및 시뮬레이션 가동 ---
+buses = build_default_buses(load_scale=load_scale)
+lines = build_default_line_inputs()
+pf_result = solve(buses, lines)
 
-if start_bus_id == end_bus_id:
-    st.error("시작 버스와 종료 버스는 다르게 선택해야 합니다.")
-    st.stop()
-
-if not candidate_site_ids:
-    st.error("후보지는 1개 이상 선택해야 합니다.")
-    st.stop()
-
-simulation_input = SimulationInput(
-    scenario=_get_shared_scenario(),
-    start_bus_id=start_bus_id,
-    end_bus_id=end_bus_id,
-    candidate_site_ids=candidate_site_ids,
-    load_scale=load_scale,
-    notes=notes,
+sim_input = sim_service.build_default_input(
+    start_bus_id=start_bus, 
+    end_bus_id=end_bus, 
+    candidate_site_ids=selected_candidates, 
+    load_scale=load_scale
 )
+sim_result = sim_service.run_simulation(sim_input)
 
-with st.spinner("시뮬레이션 결과를 생성하는 중입니다..."):
-    result: SimulationResult = service.run_simulation(simulation_input)
+# --- 4. 화면 레이아웃 (지도 & 지표) ---
+col_map, col_info = st.columns([2, 1])
 
-st.session_state.sgop_shared_scenario = result.scenario
+with col_map:
+    st.subheader("📍 A* 최적 경로 및 계통 혼잡 지도")
+    m = folium.Map(location=[36.5, 127.5], zoom_start=7, tiles='CartoDB positron')
+    
+    bus_coords = {
+        "BUS_001": [37.5665, 126.9780], "BUS_002": [37.4563, 126.7052], 
+        "BUS_003": [37.2636, 127.0286], "BUS_004": [37.8813, 127.7298],
+        "BUS_005": [37.7519, 128.8761], "BUS_006": [37.3422, 127.9202],
+        "BUS_007": [36.3504, 127.3845], "BUS_008": [36.6424, 127.4890],
+        "BUS_009": [35.1595, 126.8526], "BUS_010": [35.8242, 127.1480],
+        "BUS_011": [35.8714, 128.6014], "BUS_012": [35.5384, 129.3114],
+        "BUS_013": [35.1796, 129.0756]
+    }
 
-st.caption(
-    f"기준 시각: {result.created_at:%Y-%m-%d %H:%M}  |  "
-    f"소스: {result.source.upper()}  |  "
-    f"시나리오: {result.scenario.scenario_id}"
-)
-st.info(result.summary)
+    # 1. 기존 혼잡망 그리기 (선 살려내기 코드 적용 완료!)
+    for line in lines:
+        f_num = line.from_bus.replace('B', '')
+        t_num = line.to_bus.replace('B', '')
+        f_bus = f"BUS_{f_num.zfill(3)}"
+        t_bus = f"BUS_{t_num.zfill(3)}"
+        
+        if f_bus in bus_coords and t_bus in bus_coords:
+            current_flow = pf_result.line_flows.get(line.line_id, 0)
+            folium.PolyLine(
+                locations=[bus_coords[f_bus], bus_coords[t_bus]],
+                color=get_congestion_color(current_flow, line.capacity_mw),
+                weight=4, opacity=0.4
+            ).add_to(m)
 
-if result.fallback.enabled:
-    st.warning(
-        f"Fallback 사용 중: `{result.fallback.mode}`  |  {result.fallback.reason}"
-    )
+    # 2. 신규 A* 최적 경로 그리기 (파란색 점선)
+    if sim_result.selected_route and sim_result.selected_route.waypoints:
+        route_coords = [[wp.latitude, wp.longitude] for wp in sim_result.selected_route.waypoints]
+        
+        folium.PolyLine(
+            locations=route_coords,
+            color="#2563eb",
+            weight=5,
+            dash_array="10",
+            tooltip="추천 A* 신규 송전 경로",
+            opacity=0.9
+        ).add_to(m)
+        
+        for wp in sim_result.selected_route.waypoints:
+            folium.CircleMarker(
+                location=[wp.latitude, wp.longitude],
+                radius=6, popup=wp.label, tooltip=wp.label,
+                color="#2563eb", fill=True, fill_color="#ffffff", fill_opacity=1.0
+            ).add_to(m)
+        
+    # 3. 지도 왼쪽 아래에 범례(Legend) 박스 추가하기
+    legend_html = '''
+    <div style="position: fixed; 
+         bottom: 30px; left: 30px; width: 170px; height: 135px; 
+         background-color: rgba(255, 255, 255, 0.95); z-index:9999; font-size:13px;
+         border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px;
+         box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+         <div style="font-weight: bold; margin-bottom: 5px;">🚥 선로 상태 범례</div>
+         <div style="margin-bottom: 2px;"><span style="color:#22c55e; font-size:16px;">■</span> 원활 (50% 미만)</div>
+         <div style="margin-bottom: 2px;"><span style="color:#eab308; font-size:16px;">■</span> 주의 (50~80%)</div>
+         <div style="margin-bottom: 2px;"><span style="color:#ef4444; font-size:16px;">■</span> 혼잡 (80% 이상)</div>
+         <div><span style="color:#2563eb; font-weight:bold; font-size:16px;">╍</span> 신규 A* 경로</div>
+    </div>
+    '''
+    m.get_root().html.add_child(folium.Element(legend_html))
 
-for warning in result.warnings:
-    st.caption(f"- {warning}")
+    st_folium(m, width="100%", height=550, returned_objects=[])
 
-top_recommendation = result.recommendations[0] if result.recommendations else None
-peak_delta = next(
-    (delta for delta in result.deltas if delta.metric_id == "peak_utilization"),
-    None,
-)
-
-metric_cols = st.columns(4)
-metric_cols[0].metric(
-    "1순위 후보",
-    top_recommendation.candidate_label if top_recommendation else "-",
-)
-metric_cols[1].metric(
-    "추천 총점",
-    f"{top_recommendation.score.total_score:.1f}"
-    if top_recommendation and top_recommendation.score
-    else "-",
-)
-metric_cols[2].metric(
-    "적용 경로 길이",
-    f"{top_recommendation.route.total_distance_km:.1f} km"
-    if top_recommendation and top_recommendation.route
-    else "-",
-)
-metric_cols[3].metric(
-    "최대 이용률 개선",
-    f"{peak_delta.improvement:.1f}%p" if peak_delta else "-",
-)
-
-st.divider()
-col_left, col_right = st.columns([1.1, 1.2])
-
-with col_left:
-    st.subheader("선정 경로")
-    if result.selected_route is None or not result.selected_route.waypoints:
-        st.info("표시할 경로 정보가 없습니다.")
+with col_info:
+    # --- 5. 설치 전/후 비교 카드 UI ---
+    st.subheader("📊 설치 전/후 비교 (Deltas)")
+    
+    if sim_result.deltas:
+        for delta in sim_result.deltas:
+            delta_color = "normal" if delta.status != "worsened" else "inverse"
+            st.metric(
+                label=delta.label,
+                value=f"{delta.after_value} {delta.unit}",
+                delta=f"{delta.improvement} {delta.unit} ({'개선' if delta.improvement > 0 else '증가'})",
+                delta_color=delta_color
+            )
     else:
-        route_df = pd.DataFrame(
-            [
-                {
-                    "point_id": waypoint.point_id,
-                    "label": waypoint.label,
-                    "latitude": waypoint.latitude,
-                    "longitude": waypoint.longitude,
-                }
-                for waypoint in result.selected_route.waypoints
-            ]
-        )
-
-        route_fig = go.Figure()
-        route_fig.add_trace(
-            go.Scatter(
-                x=route_df["longitude"],
-                y=route_df["latitude"],
-                mode="lines+markers+text",
-                text=route_df["label"],
-                textposition="top center",
-                line={"width": 3, "color": "#1f77b4"},
-                marker={"size": 10, "color": "#d62728"},
-                hovertemplate="%{text}<br>위도 %{y:.3f}<br>경도 %{x:.3f}<extra></extra>",
-                name="경로",
-            )
-        )
-        route_fig.update_layout(
-            height=360,
-            margin={"t": 20, "b": 20},
-            xaxis_title="경도",
-            yaxis_title="위도",
-            showlegend=False,
-        )
-        st.plotly_chart(route_fig, width="stretch")
-
-with col_right:
-    st.subheader("설치 전후 비교")
-    delta_df = pd.DataFrame(
-        [
-            {
-                "metric_id": delta.metric_id,
-                "지표": delta.label,
-                "설치 전": delta.before_value,
-                "설치 후": delta.after_value,
-                "개선량": delta.improvement,
-                "단위": delta.unit,
-                "상태": delta.status,
-            }
-            for delta in result.deltas
-        ]
-    )
-
-    if delta_df.empty:
-        st.info("표시할 비교 결과가 없습니다.")
-    else:
-        delta_fig = go.Figure()
-        delta_fig.add_trace(
-            go.Bar(
-                x=delta_df["지표"],
-                y=delta_df["개선량"],
-                marker_color=[
-                    "#2ca02c" if status == "improved" else "#ff7f0e" if status == "unchanged" else "#d62728"
-                    for status in delta_df["상태"]
-                ],
-                hovertemplate="%{x}<br>%{y:.1f}<extra></extra>",
-                name="개선량",
-            )
-        )
-        delta_fig.update_layout(
-            height=360,
-            margin={"t": 20, "b": 80},
-            yaxis_title="개선량",
-            showlegend=False,
-        )
-        st.plotly_chart(delta_fig, width="stretch")
-
-st.divider()
-st.subheader("추천안 비교")
-
-recommendation_df = pd.DataFrame(
-    [
-        {
-            "순위": recommendation.rank,
-            "후보지": recommendation.candidate_label,
-            "총점": recommendation.score.total_score if recommendation.score else None,
-            "거리(km)": recommendation.route.total_distance_km if recommendation.route else None,
-            "예상 비용": recommendation.route.estimated_cost if recommendation.route else None,
-            "혼잡 완화": recommendation.score.congestion_relief if recommendation.score else None,
-            "환경 리스크": recommendation.score.environmental_risk if recommendation.score else None,
-            "정책 리스크": recommendation.score.policy_risk if recommendation.score else None,
-        }
-        for recommendation in result.recommendations
-    ]
-)
-
-if recommendation_df.empty:
-    st.info("추천안이 없습니다.")
-else:
-    st.dataframe(recommendation_df, width="stretch", hide_index=True)
-
-for recommendation in result.recommendations:
-    with st.expander(f"{recommendation.rank}위 {recommendation.candidate_label}"):
-        st.write(recommendation.rationale)
-        if recommendation.route is not None:
-            st.write(recommendation.route.summary)
-            st.caption(
-                "경로 노드: " + " -> ".join(recommendation.route.path_node_ids)
-            )
-        if recommendation.score is not None and recommendation.score.notes:
-            for note in recommendation.score.notes:
-                st.caption(f"- {note}")
+        st.info("비교할 데이터가 없습니다.")
+        
+    st.divider()
+    st.write("**💡 종합 요약**")
+    st.success(sim_result.summary)
