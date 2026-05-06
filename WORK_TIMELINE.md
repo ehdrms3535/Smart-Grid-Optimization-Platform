@@ -301,3 +301,58 @@
 - 수정 파일: `미정 (예상 범위: src/engine/search/*, src/engine/optimize/*, src/services/simulation_service.py, 검증 문서)`
 - 검증: `MVP 완성 이후 수행 예정`
 - 다음 작업: MVP 범위의 지도/엔진/서비스 연결을 먼저 완료한 뒤 학습 데이터셋, 평가지표, 반복 검증 루프를 설계한다.
+
+### 2026-05-06 1~3주차 구조 및 완성도 점검
+- 작업: 현재 파일/디렉토리 구조와 `meeting_plan/MEETING_PLAN_2026-03-30.md`의 1~3주차 역할별 완료 상태를 점검했다. 서비스 기준으로 Monitoring DC Power Flow, Simulation A*/counterfactual delta, Prediction baseline/GNN/hybrid 실제 결과가 반환되는 것을 확인했다. 단, `pages/02_simulation.py`는 `folium`, `streamlit_folium` 의존성이 `requirements.txt`에 없어 fresh 환경 bare-run이 실패하며, `ScenarioService`, VWorld 어댑터, 도메인 모델, tests 실코드는 아직 스텁/문서 수준임을 확인했다.
+- 수정 파일: `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m compileall app.py pages src`
+  - `.venv310/bin/python -c "from src.services.monitoring_service import MonitoringService; r=MonitoringService().run_dc_power_flow(load_scale=1.0); print({'source': r.source, 'fallback': r.fallback.mode, 'lines': len(r.line_statuses), 'max_util': r.congestion_summary.max_utilization, 'warnings': r.warnings[:2]})"` -> `source='dc_power_flow'`, `fallback='none'`, `lines=15`
+  - `.venv310/bin/python -c "from src.services.simulation_service import SimulationService; svc=SimulationService(); r=svc.run_simulation(svc.build_default_input(load_scale=1.0)); print({'source': r.source, 'fallback': r.fallback.mode, 'route_source': r.selected_route.source if r.selected_route else None, 'recs': len(r.recommendations)})"` -> `source='astar'`, `fallback='none'`, `route_source='astar'`, `recs=3`
+  - `.venv310/bin/python -c "from pathlib import Path; from src.services.prediction_service import PredictionService; raw_dir=str(Path('data/raw').resolve()); r=PredictionService().run_hybrid_prediction(raw_dir=raw_dir, load_scale=1.0, retrain=False, epochs=1); print({'source': r.source, 'fallback': r.fallback.mode, 'preds': len(r.predictions), 'risks': len(r.risk_lines)})"` -> `source='hybrid'`, `fallback='none'`, `preds=312`
+  - `.venv310/bin/python -c "import runpy; runpy.run_path('pages/01_monitoring.py'); print('monitoring-page-run-ok')"` -> 통과
+  - `.venv310/bin/python -c "import runpy; runpy.run_path('pages/02_simulation.py'); print('simulation-page-run-ok')"` -> `ModuleNotFoundError: No module named 'folium'`
+  - `.venv310/bin/python -c "import runpy; runpy.run_path('pages/03_prediction.py'); print('prediction-page-run-ok')"` -> 통과
+- 다음 작업: `folium`/`streamlit-folium` 의존성 누락을 정리하고, Simulation 페이지가 공통 `ScenarioContext`를 명시적으로 공유하도록 보정한 뒤 `ScenarioService` 저장/불러오기와 지도/VWorld 스키마를 3주차 범위로 이어서 구현한다.
+
+### 2026-05-06 Beta 1~2주차 우선순위 1 임시 작업 목록 작성
+- 작업: Beta 1~2주차 100% 완료의 선결 조건인 Simulation 페이지 지도 의존성 복구 작업을 임시 체크리스트로 정리했다. `folium`, `streamlit-folium` 의존성 추가, 현재 가상환경 설치, import 검증, Simulation 페이지 bare-run, 전체 compileall, 결과 기록 순서로 나눴다.
+- 수정 파일: `tmp_tasks/BETA_WEEK1_2_PRIORITY1.md`, `WORK_TIMELINE.md`
+- 검증: 문서 추가 확인
+- 다음 작업: 체크리스트 1번부터 순서대로 실행해 `requirements.txt`와 `.venv310` 환경을 맞추고 `pages/02_simulation.py` bare-run 실패를 해소한다.
+
+### 2026-05-06 Beta 1~2주차 우선순위 2 임시 작업 목록 작성
+- 작업: Beta 1~2주차 100% 완료를 위해 Simulation 페이지의 후보지별 추천 결과표와 선택 추천안 요약 작업을 임시 체크리스트로 정리했다. 3주차 범위인 시나리오 저장/불러오기는 제외하고, 추천 결과표, 1순위 요약 카드, 추천 근거, fallback/warnings 표시, 입력-결과 연결 표시, 빈 후보지 처리, 검증 명령까지 실행 단위로 나눴다.
+- 수정 파일: `tmp_tasks/BETA_WEEK1_2_PRIORITY2.md`, `WORK_TIMELINE.md`
+- 검증: 문서 추가 확인
+- 다음 작업: 우선순위 1 완료 후 `tmp_tasks/BETA_WEEK1_2_PRIORITY2.md` 순서대로 `pages/02_simulation.py`의 추천 결과 렌더링을 보강한다.
+
+### 2026-05-06 박차오름 3주차 우선순위 3 임시 작업 목록 작성
+- 작업: 박차오름 3주차 100% 완료를 위해 Simulation 페이지가 Monitoring/Prediction과 같은 `ScenarioContext`를 공유하도록 만드는 작업을 임시 체크리스트로 정리했다. `pages/02_simulation.py`에 `_get_shared_scenario()`를 추가하고, `SimulationInput` 생성 시 shared scenario를 전달하며, 결과 scenario를 session state에 다시 저장하고, 화면과 검증 명령으로 같은 `scenario_id`를 확인하는 순서로 나눴다.
+- 수정 파일: `tmp_tasks/PARK_WEEK3_PRIORITY3_SHARED_SCENARIO.md`, `WORK_TIMELINE.md`
+- 검증: 문서 추가 확인
+- 다음 작업: 우선순위 1의 지도 의존성 복구 후 `pages/02_simulation.py`에 shared scenario 통합을 적용하고 서비스/페이지 검증을 실행한다.
+
+### 2026-05-06 박차오름 3주차 우선순위 4 임시 작업 목록 작성
+- 작업: 박차오름 3주차 100% 완료를 위해 후보지 추천 점수에 실제 counterfactual delta와 혼잡 완화 근거를 반영하는 작업을 임시 체크리스트로 정리했다. `score_function.py`의 impact 입력과 bonus 계산, `SimulationService`의 후보별 counterfactual impact 계산, 1순위 delta 재사용, 추천 rationale 보강, fallback/warnings 정리, 서비스/회귀 검증 명령까지 실행 단위로 나눴다.
+- 수정 파일: `tmp_tasks/PARK_WEEK3_PRIORITY4_SCORE_WITH_DELTA.md`, `WORK_TIMELINE.md`
+- 검증: 문서 추가 확인
+- 다음 작업: 우선순위 3의 shared scenario 통합 후 `src/engine/search/score_function.py`와 `src/services/simulation_service.py`에 후보별 delta 기반 점수화를 적용한다.
+
+### 2026-05-06 Gamma 3주차 우선순위 5 임시 작업 목록 작성
+- 작업: Gamma 3주차 100% 완료를 위해 Prediction 테스트/QA 보강 작업을 임시 체크리스트로 정리했다. `feature_builder` 계약, PredictionService mock/baseline/GNN/hybrid 반환 계약, hybrid 조합 및 fallback, 위험도/설명 출력, pytest marker와 검증 명령, LSTM slow 테스트 분리 기준까지 실행 단위로 나눴다.
+- 수정 파일: `tmp_tasks/GAMMA_WEEK3_PRIORITY5_PREDICTION_TESTS.md`, `WORK_TIMELINE.md`
+- 검증: 문서 추가 확인
+- 다음 작업: `tests/test_prediction_feature_builder.py`, `tests/test_prediction_service_contract.py`, `tests/test_prediction_risk_and_fallback.py`를 추가하고 빠른 pytest와 compileall 검증을 실행한다.
+
+### 2026-05-06 우선순위 MD 전수 재검토 및 보정
+- 작업: 우선순위 MD 작성 당시에는 핵심 파일 중심으로 확인했으나, 이번에 `.py`, 주요 `.md`, 설정 파일, 임시 작업 문서 전체를 다시 확인했다. 바이너리 모델, PDF/PPTX, CSV 원본 데이터는 코드가 아니므로 존재 여부와 연동 관계만 확인했다. 재검토 결과 기존 우선순위 방향은 유지하되, `pages/02_simulation.py`의 top-level `folium` import, 페이지 직접 `dc_power_flow` 지도 표시, `SimulationService`의 `created_at` 처리, counterfactual score 계산 순환 가능성, Prediction 테스트의 외부 weather 호출 가능성을 각 우선순위 문서에 보강했다.
+- 수정 파일: `tmp_tasks/BETA_WEEK1_2_PRIORITY1.md`, `tmp_tasks/BETA_WEEK1_2_PRIORITY2.md`, `tmp_tasks/PARK_WEEK3_PRIORITY3_SHARED_SCENARIO.md`, `tmp_tasks/PARK_WEEK3_PRIORITY4_SCORE_WITH_DELTA.md`, `tmp_tasks/GAMMA_WEEK3_PRIORITY5_PREDICTION_TESTS.md`, `WORK_TIMELINE.md`
+- 검증:
+  - `git status --short`
+  - `rg --files --hidden -g '!__pycache__' -g '!*.pyc' -g '!.git/**' -g '!.idea/**' -g '!.venv/**' -g '!.venv310/**'`
+  - `find . -path './.git' -prune -o -path './.idea' -prune -o -path './.venv' -prune -o -path './.venv310' -prune -o -path './__pycache__' -prune -o -type f -name '*.py' -print`
+  - `find . -path './.git' -prune -o -path './.idea' -prune -o -path './.venv' -prune -o -path './.venv310' -prune -o -path './__pycache__' -prune -o -type f -name '*.md' -print`
+  - `rg -n "folium|streamlit_folium|sgop_shared_scenario|CandidateImpact|pytest|_load_weather_history|fetch_historical|use_container_width|width=\"stretch\""`
+  - `wc -l app.py pages/*.py src/**/*.py src/**/**/*.py tmp_tasks/*.md requirements.txt meeting_plan/*.md DEVELOPMENT_FLOW_2026-03-30.md docs/*.md tests/*.md README.md`
+- 다음 작업: 문서 보정된 순서대로 우선순위 1부터 구현하되, 이번 작업 범위에서는 실제 코드 구현을 진행하지 않는다.
