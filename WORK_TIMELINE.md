@@ -395,3 +395,37 @@
   - `.venv310/bin/python -c "from src.services.simulation_service import SimulationService; svc=SimulationService(); r=svc.run_simulation(svc.build_default_input(load_scale=1.0)); print({'source': r.source, 'fallback': r.fallback.mode, 'recs': len(r.recommendations), 'top': r.recommendations[0].candidate_id if r.recommendations else None, 'route': r.selected_route.route_id if r.selected_route else None})"` -> `source='astar'`, `fallback='none'`, `recs=3`, `top='SITE_SOUTH'`
   - `.venv310/bin/python -c "from src.services.simulation_service import SimulationService; svc=SimulationService(); r=svc.run_simulation(svc.build_default_input(candidate_site_ids=[], load_scale=1.0)); print({'candidates': len(r.simulation_input.candidate_site_ids), 'recs': len(r.recommendations), 'top': r.recommendations[0].candidate_id if r.recommendations else None})"` -> 후보지 0개 입력 시 기본 후보 3개 사용 확인
 - 다음 작업: `PARK_WEEK3_PRIORITY3_SHARED_SCENARIO.md` 기준으로 Simulation 페이지가 Monitoring/Prediction과 같은 `ScenarioContext`를 공유하도록 통합한다.
+
+### 2026-05-06 Gamma 3주차 우선순위 5 완료
+- 작업: Prediction 파트의 빠른 pytest 테스트를 추가했다. `tests/conftest.py`에 synthetic load/weather fixture와 prediction helper를 두고, `feature_builder`의 lag/time/matrix 계약, `PredictionService.run_mock_prediction()` 반환 계약, `BaselineForecaster`와 `GNNForecaster`의 synthetic 예측 계약, `PredictionService.run_gnn_prediction()`의 synthetic weather 경로, hybrid 가중 평균/키 불일치, hybrid 실패 시 baseline fallback, 위험 선로 정렬/설명 출력을 검증했다. 실제 LSTM 모델 로드/학습 테스트는 기본 빠른 테스트에서 제외하고, `pytest.ini`에 `integration`, `slow` marker를 등록해 후속 분리 기준을 마련했다.
+- 수정 파일: `pytest.ini`, `tests/conftest.py`, `tests/test_prediction_feature_builder.py`, `tests/test_prediction_service_contract.py`, `tests/test_prediction_risk_and_fallback.py`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m pytest tests -q` -> 11개 통과
+  - `.venv310/bin/python -m pytest tests -q -m "not integration and not slow"` -> 11개 통과
+  - `.venv310/bin/python -m pytest tests/test_prediction_feature_builder.py -q` -> 3개 통과
+  - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
+- 남은 테스트 갭: 실제 `data/raw` 기반 baseline/GNN 통합 테스트와 저장된 LSTM 모델 로드/재학습 테스트는 아직 포함하지 않았다. 이 둘은 외부 데이터/모델 상태와 실행 시간이 개입되므로 후속 `integration` 또는 `slow` 테스트로 분리하는 것이 맞다.
+- 다음 작업: `PARK_WEEK3_PRIORITY3_SHARED_SCENARIO.md` 기준으로 Simulation 페이지 shared `ScenarioContext` 통합을 진행하거나, Prediction 통합/slow 테스트를 별도 범위로 추가한다.
+
+### 2026-05-06 박차오름 3주차 우선순위 3 완료
+- 작업: `pages/02_simulation.py`가 Monitoring/Prediction과 같은 Streamlit session state 키인 `sgop_shared_scenario`를 사용하도록 통합했다. Simulation 페이지에 `_get_shared_scenario()`를 추가하고, `SimulationService.build_default_input()`과 `run_simulation()` 호출에 shared `ScenarioContext`와 기준 시각을 전달하도록 변경했다. 결과 반환 후에는 `sim_result.scenario`를 다시 session state에 저장하며, 화면 caption에 `scenario_id`를 표시해 입력-결과 연결 상태를 확인할 수 있게 했다. 시나리오 저장/불러오기는 이번 범위에서 제외했다.
+- 수정 파일: `pages/02_simulation.py`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -c "from src.data.schemas import ScenarioContext; from src.services.monitoring_service import MonitoringService; from src.services.simulation_service import SimulationService; from src.services.prediction_service import PredictionService; scenario=ScenarioContext(scenario_id='shared-week3'); monitoring=MonitoringService().run_dc_power_flow(scenario=scenario, load_scale=1.0); svc=SimulationService(); simulation=svc.run_simulation(svc.build_default_input(scenario=scenario, load_scale=1.0)); prediction=PredictionService().run_mock_prediction(scenario=scenario, load_scale=1.0); print([monitoring.scenario.scenario_id, simulation.scenario.scenario_id, prediction.scenario.scenario_id], simulation.source, simulation.fallback.mode)"` -> `['shared-week3', 'shared-week3', 'shared-week3'] astar none`
+  - `.venv310/bin/python -c "import runpy; runpy.run_path('pages/02_simulation.py'); print('simulation-page-run-ok')"` -> 통과, Streamlit bare-mode 경고 확인
+  - `.venv310/bin/python -m compileall app.py pages src` -> 통과
+- 다음 작업: `PARK_WEEK3_PRIORITY4_SCORE_WITH_DELTA.md` 기준으로 후보지별 추천 점수에 실제 counterfactual delta와 혼잡 완화 근거를 반영한다.
+
+### 2026-05-06 박차오름 3주차 우선순위 4 완료
+- 작업: 후보지 추천 점수에 후보별 counterfactual delta 기반 impact를 반영했다. `score_function.py`에 `CandidateImpactInput`과 counterfactual bonus 산식을 추가하고, `calculate_score()`가 실제 최대 이용률 개선, 위험 선로 감소, 손실 감소, 운영 여유도 증가를 `ScoreBreakdown.congestion_relief`와 `notes`에 반영하도록 확장했다. `SimulationService.run_simulation()`은 이제 monitoring baseline을 먼저 계산한 뒤 후보별 route/base score/counterfactual delta/final score를 만들고 rank를 정한다. 최종 `SimulationResult.deltas`는 1순위 후보 점수화에 사용된 delta를 재사용한다. 후보별 impact 계산 실패는 해당 후보 notes/warnings에만 남기고 전체 simulation fallback으로 전파하지 않게 했다.
+- 수정 파일: `src/engine/search/score_function.py`, `src/services/simulation_service.py`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m compileall app.py pages src` -> 통과
+  - `.venv310/bin/python -c "from src.services.simulation_service import SimulationService; svc=SimulationService(); r=svc.run_simulation(svc.build_default_input(load_scale=1.0)); print({'source': r.source, 'fallback': r.fallback.mode, 'top': r.recommendations[0].candidate_id, 'top_score': r.recommendations[0].score.total_score, 'notes': r.recommendations[0].score.notes, 'deltas': [(d.metric_id, d.improvement) for d in r.deltas]})"` -> `source='astar'`, `fallback='none'`, top `SITE_SOUTH`, notes에 counterfactual 개선 근거와 bonus 반영 확인
+  - `.venv310/bin/python -c "from src.services.simulation_service import SimulationService; svc=SimulationService(); r=svc.run_simulation(svc.build_default_input(load_scale=1.0)); [print(rec.rank, rec.candidate_id, rec.score.total_score, rec.score.congestion_relief, rec.score.notes[-2:]) for rec in r.recommendations]"` -> 후보 3개 모두 final score와 counterfactual notes 확인
+  - `.venv310/bin/python -c "from src.services.simulation_service import SimulationService; svc=SimulationService(); r=svc.run_simulation(svc.build_default_input(load_scale=1.2)); print({'source': r.source, 'fallback': r.fallback.mode, 'top': r.recommendations[0].candidate_id, 'warnings': r.warnings[:5], 'deltas': [(d.metric_id, d.before_value, d.after_value, d.improvement) for d in r.deltas]})"` -> 고부하 조건에서도 actual 경로 유지
+  - `.venv310/bin/python -c "from src.services.simulation_service import SimulationService; svc=SimulationService(); r=svc.run_mock_simulation(svc.build_default_input(load_scale=1.0)); print({'source': r.source, 'fallback': r.fallback.mode, 'recs': len(r.recommendations), 'top': r.recommendations[0].candidate_id})"` -> mock 경로 유지
+  - `.venv310/bin/python -c "from src.services.simulation_service import SimulationService; svc=SimulationService(); svc._build_counterfactual_monitoring=lambda **kwargs: (_ for _ in ()).throw(RuntimeError('forced candidate impact failure')); r=svc.run_simulation(svc.build_default_input(load_scale=1.0)); print({'source': r.source, 'fallback': r.fallback.mode, 'warnings': r.warnings[:2], 'top': r.recommendations[0].candidate_id, 'notes': r.recommendations[0].score.notes[-2:]})"` -> 후보별 impact 실패가 전체 fallback으로 전파되지 않음
+  - `.venv310/bin/python -c "import runpy; runpy.run_path('pages/02_simulation.py'); print('simulation-page-run-ok')"` -> 통과, Streamlit bare-mode 경고 확인
+  - `.venv310/bin/python -m pytest tests -q` -> 11개 통과
+- 다음 작업: Beta 3주차 범위의 시나리오 저장/불러오기 또는 `ScenarioService` 저장 책임 구현을 진행한다.

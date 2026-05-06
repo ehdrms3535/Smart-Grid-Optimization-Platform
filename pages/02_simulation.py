@@ -1,15 +1,35 @@
 from __future__ import annotations
+from datetime import datetime
+
 import pandas as pd
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
 
 # 오름님의 엔진 및 서비스 모듈 임포트
-from src.data.schemas import SimulationResult
+from src.data.schemas import ScenarioContext, SimulationResult
 from src.engine.powerflow.dc_power_flow import solve, build_default_buses, build_default_line_inputs
 from src.services.simulation_service import SimulationService
 
 st.set_page_config(page_title="시뮬레이션 | SGOP", layout="wide")
+
+
+def _get_shared_scenario() -> ScenarioContext:
+    scenario = st.session_state.get("sgop_shared_scenario")
+    if isinstance(scenario, ScenarioContext):
+        return scenario
+
+    created_at = datetime.now().replace(minute=0, second=0, microsecond=0)
+    scenario = ScenarioContext(
+        scenario_id="sgop-demo-scenario",
+        title="SGOP Demo Scenario",
+        description="Monitoring, Simulation, Prediction이 공유하는 기본 시나리오",
+        region="South Korea",
+        created_at=created_at,
+        created_by="streamlit-session",
+    )
+    st.session_state.sgop_shared_scenario = scenario
+    return scenario
 
 # --- 1. 서비스 초기화 ---
 sim_service = SimulationService()
@@ -74,18 +94,28 @@ buses = build_default_buses(load_scale=load_scale)
 lines = build_default_line_inputs()
 pf_result = solve(buses, lines)
 
+shared_scenario = _get_shared_scenario()
+shared_created_at = shared_scenario.created_at
+
 sim_input = sim_service.build_default_input(
+    scenario=shared_scenario,
+    created_at=shared_created_at,
     start_bus_id=start_bus, 
     end_bus_id=end_bus, 
     candidate_site_ids=selected_candidates, 
     load_scale=load_scale
 )
-sim_result = sim_service.run_simulation(sim_input)
+sim_result = sim_service.run_simulation(
+    sim_input,
+    created_at=shared_created_at,
+)
+st.session_state.sgop_shared_scenario = sim_result.scenario
 
 if not selected_candidates:
     st.warning("후보지가 비어 기본 후보지를 사용합니다.")
 
 st.caption(
+    f"시나리오: {sim_result.scenario.scenario_id}  |  "
     f"입력: {sim_result.simulation_input.start_bus_id} -> "
     f"{sim_result.simulation_input.end_bus_id}  |  "
     f"후보지 {len(sim_result.simulation_input.candidate_site_ids)}개  |  "
