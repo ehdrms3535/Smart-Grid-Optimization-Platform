@@ -37,6 +37,7 @@ from src.engine.search.astar_router import (
     build_mock_route,
 )
 from src.engine.search.score_function import (
+    CandidateImpactInput,
     CandidateScoreInput,
     build_recommendation,
     calculate_score,
@@ -180,15 +181,22 @@ class SimulationService:
         resolved_input, input_warnings = self._normalize_input(simulation_input, resolved_at)
 
         try:
-            recommendations = self._build_recommendations(resolved_input, use_actual_route=True)
             monitoring_before = self._get_monitoring_baseline(
                 simulation_input=resolved_input,
                 created_at=resolved_at,
+            )
+            recommendations, candidate_deltas_by_id, impact_warnings = (
+                self._build_recommendation_bundle(
+                    resolved_input,
+                    use_actual_route=True,
+                    monitoring_before=monitoring_before,
+                )
             )
             deltas, delta_warnings, fallback = self._resolve_deltas(
                 simulation_input=resolved_input,
                 recommendations=recommendations,
                 monitoring_before=monitoring_before,
+                candidate_deltas_by_id=candidate_deltas_by_id,
             )
 
             return self._build_result(
@@ -197,7 +205,7 @@ class SimulationService:
                 source="astar",
                 recommendations=recommendations,
                 deltas=deltas,
-                warnings=input_warnings + delta_warnings,
+                warnings=input_warnings + impact_warnings + delta_warnings,
                 fallback=fallback,
             )
 
@@ -278,8 +286,29 @@ class SimulationService:
         simulation_input: SimulationInput,
         *,
         use_actual_route: bool,
+        monitoring_before: MonitoringResult | None = None,
     ) -> list[RecommendationResult]:
+        recommendations, _, _ = self._build_recommendation_bundle(
+            simulation_input,
+            use_actual_route=use_actual_route,
+            monitoring_before=monitoring_before,
+        )
+        return recommendations
+
+    def _build_recommendation_bundle(
+        self,
+        simulation_input: SimulationInput,
+        *,
+        use_actual_route: bool,
+        monitoring_before: MonitoringResult | None = None,
+    ) -> tuple[
+        list[RecommendationResult],
+        dict[str, list[SimulationDelta]],
+        list[str],
+    ]:
         scored_recommendations: list[RecommendationResult] = []
+        candidate_deltas_by_id: dict[str, list[SimulationDelta]] = {}
+        warnings: list[str] = []
         bus_nodes = self._build_bus_nodes() if use_actual_route else []
         bus_edges = self._build_bus_edges(bus_nodes) if use_actual_route else []
         start_bus = _to_bus_node_spec(simulation_input.start_bus_id)
@@ -310,17 +339,50 @@ class SimulationService:
                 if use_actual_route
                 else calculate_mock_score(score_input)
             )
+            base_recommendation = build_recommendation(
+                candidate_id=candidate_id,
+                candidate_label=str(candidate["label"]),
+                route=route,
+                score=score,
+                rationale=self._build_rationale(simulation_input, candidate, score),
+            )
+
+            impact: CandidateImpactInput | None = None
+            candidate_warnings: list[str] = []
+            if (
+                use_actual_route
+                and monitoring_before is not None
+                and not monitoring_before.fallback.enabled
+                and monitoring_before.source == "dc_power_flow"
+            ):
+                impact, candidate_deltas, candidate_warnings = self._build_candidate_impact(
+                    simulation_input=simulation_input,
+                    monitoring_before=monitoring_before,
+                    recommendation=base_recommendation,
+                )
+                if candidate_deltas:
+                    candidate_deltas_by_id[candidate_id] = candidate_deltas
+                score = calculate_score(score_input, route=route, impact=impact)
+                if candidate_warnings:
+                    score = replace(score, notes=score.notes + candidate_warnings)
+                    warnings.extend(candidate_warnings)
+
             scored_recommendations.append(
                 build_recommendation(
                     candidate_id=candidate_id,
                     candidate_label=str(candidate["label"]),
                     route=route,
                     score=score,
-                    rationale=self._build_rationale(simulation_input, candidate, score),
+                    rationale=self._build_rationale(
+                        simulation_input,
+                        candidate,
+                        score,
+                        impact=impact,
+                    ),
                 )
             )
 
-        return rank_recommendations(scored_recommendations)
+        return rank_recommendations(scored_recommendations), candidate_deltas_by_id, warnings
 
     def _build_candidate_route(
         self,
@@ -391,6 +453,7 @@ class SimulationService:
         simulation_input: SimulationInput,
         recommendations: list[RecommendationResult],
         monitoring_before: MonitoringResult,
+        candidate_deltas_by_id: dict[str, list[SimulationDelta]] | None = None,
     ) -> tuple[list[SimulationDelta], list[str], FallbackInfo]:
         top_recommendation = recommendations[0] if recommendations else None
         use_actual_baseline = (
@@ -399,6 +462,18 @@ class SimulationService:
         )
 
         if use_actual_baseline:
+            if top_recommendation is not None and candidate_deltas_by_id:
+                candidate_deltas = candidate_deltas_by_id.get(top_recommendation.candidate_id)
+                if candidate_deltas:
+                    return (
+                        candidate_deltas,
+                        [
+                            build_source_warning("SimulationService", "astar"),
+                            "1순위 delta는 후보별 counterfactual 영향 계산 결과를 재사용합니다.",
+                        ],
+                        build_no_fallback_info(),
+                    )
+
             try:
                 monitoring_after, counterfactual_warnings = self._build_counterfactual_monitoring(
                     simulation_input=simulation_input,
@@ -477,7 +552,21 @@ class SimulationService:
         simulation_input: SimulationInput,
         candidate: dict[str, float | str],
         score: ScoreBreakdown,
+        *,
+        impact: CandidateImpactInput | None = None,
     ) -> str:
+        if impact is not None:
+            peak = max(0.0, impact.peak_utilization_improvement)
+            risk = max(0.0, impact.risk_line_reduction)
+            losses = max(0.0, impact.loss_reduction_mw)
+            margin = max(0.0, impact.operating_margin_gain)
+            return (
+                f"{candidate['label']}은 최대 이용률을 {peak:.1f}%p 낮추고 "
+                f"위험 선로를 {risk:.1f}개 줄이는 counterfactual 계산 결과를 반영합니다. "
+                f"손실 {losses:.1f} MW 감소와 운영 여유도 {margin:.1f}%p 증가까지 고려해 "
+                f"혼잡 완화 점수 {score.congestion_relief:.1f}를 확보하는 안입니다."
+            )
+
         return (
             f"{candidate['label']}은 부하 배율 {simulation_input.load_scale:.0%} 기준으로 "
             f"혼잡 완화 점수 {score.congestion_relief:.1f}를 확보하면서 "
@@ -551,6 +640,43 @@ class SimulationService:
             )
 
         return deltas
+
+    def _build_candidate_impact(
+        self,
+        *,
+        simulation_input: SimulationInput,
+        monitoring_before: MonitoringResult,
+        recommendation: RecommendationResult,
+    ) -> tuple[CandidateImpactInput, list[SimulationDelta], list[str]]:
+        try:
+            monitoring_after, _ = self._build_counterfactual_monitoring(
+                simulation_input=simulation_input,
+                monitoring_before=monitoring_before,
+                top_recommendation=recommendation,
+            )
+            deltas = self._build_actual_deltas(
+                monitoring_before=monitoring_before,
+                monitoring_after=monitoring_after,
+                top_recommendation=recommendation,
+            )
+            return _impact_from_deltas(deltas), deltas, []
+        except Exception as exc:  # noqa: BLE001
+            try:
+                deltas = self._build_heuristic_deltas(
+                    monitoring_before=monitoring_before,
+                    top_recommendation=recommendation,
+                )
+                warning = (
+                    f"{recommendation.candidate_id} 후보 counterfactual DC Power Flow 실패 "
+                    f"-> heuristic impact 사용. 원인: {exc}"
+                )
+                return _impact_from_deltas(deltas), deltas, [warning]
+            except Exception as fallback_exc:  # noqa: BLE001
+                warning = (
+                    f"{recommendation.candidate_id} 후보 impact 계산 실패 "
+                    f"-> counterfactual bonus 0점 처리. 원인: {fallback_exc}"
+                )
+                return CandidateImpactInput(), [], [warning]
 
     def _build_counterfactual_monitoring(
         self,
@@ -987,6 +1113,23 @@ def _delta_status(
     if lower_is_better:
         return "improved" if after_value < before_value else "worsened"
     return "improved" if after_value > before_value else "worsened"
+
+
+def _impact_from_deltas(deltas: list[SimulationDelta]) -> CandidateImpactInput:
+    return CandidateImpactInput(
+        peak_utilization_improvement=_delta_improvement(deltas, "peak_utilization"),
+        risk_line_reduction=_delta_improvement(deltas, "risk_lines"),
+        loss_reduction_mw=_delta_improvement(deltas, "losses"),
+        operating_margin_gain=_delta_improvement(deltas, "operating_margin"),
+    )
+
+
+def _delta_improvement(
+    deltas: list[SimulationDelta],
+    metric_id: str,
+) -> float:
+    delta = next((item for item in deltas if item.metric_id == metric_id), None)
+    return float(delta.improvement) if delta is not None else 0.0
 
 
 def _get_bus(bus_id: str) -> dict[str, float | str]:

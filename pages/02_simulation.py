@@ -1,13 +1,35 @@
 from __future__ import annotations
+from datetime import datetime
+
+import pandas as pd
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
 
 # 오름님의 엔진 및 서비스 모듈 임포트
+from src.data.schemas import ScenarioContext, SimulationResult
 from src.engine.powerflow.dc_power_flow import solve, build_default_buses, build_default_line_inputs
 from src.services.simulation_service import SimulationService
 
 st.set_page_config(page_title="시뮬레이션 | SGOP", layout="wide")
+
+
+def _get_shared_scenario() -> ScenarioContext:
+    scenario = st.session_state.get("sgop_shared_scenario")
+    if isinstance(scenario, ScenarioContext):
+        return scenario
+
+    created_at = datetime.now().replace(minute=0, second=0, microsecond=0)
+    scenario = ScenarioContext(
+        scenario_id="sgop-demo-scenario",
+        title="SGOP Demo Scenario",
+        description="Monitoring, Simulation, Prediction이 공유하는 기본 시나리오",
+        region="South Korea",
+        created_at=created_at,
+        created_by="streamlit-session",
+    )
+    st.session_state.sgop_shared_scenario = scenario
+    return scenario
 
 # --- 1. 서비스 초기화 ---
 sim_service = SimulationService()
@@ -20,6 +42,35 @@ def get_congestion_color(flow_mw, capacity_mw):
     if congestion >= 80: return "#ef4444"  # 빨강
     elif congestion >= 50: return "#eab308" # 노랑
     else: return "#22c55e" # 초록
+
+
+def _build_recommendation_rows(sim_result: SimulationResult) -> list[dict]:
+    rows: list[dict] = []
+    for recommendation in sim_result.recommendations:
+        route = recommendation.route
+        score = recommendation.score
+        rows.append({
+            "순위": recommendation.rank,
+            "후보지": f"{recommendation.candidate_label} ({recommendation.candidate_id})",
+            "총점": round(score.total_score, 1) if score else None,
+            "경로 길이 (km)": round(route.total_distance_km, 1) if route else None,
+            "예상 비용": round(route.estimated_cost, 1) if route else None,
+            "혼잡 완화": round(score.congestion_relief, 1) if score else None,
+            "거리 비용": round(score.distance_cost, 1) if score else None,
+            "공사 비용": round(score.construction_cost, 1) if score else None,
+            "환경 리스크": round(score.environmental_risk, 1) if score else None,
+            "정책 리스크": round(score.policy_risk, 1) if score else None,
+            "경로 소스": route.source if route else "-",
+        })
+    return rows
+
+
+def _format_route_nodes(sim_result: SimulationResult) -> str:
+    route = sim_result.selected_route
+    if route is None or not route.path_node_ids:
+        return "-"
+    return " -> ".join(route.path_node_ids)
+
 
 # --- 2. 사이드바 입력창 (SimulationService 연동) ---
 with st.sidebar:
@@ -43,13 +94,40 @@ buses = build_default_buses(load_scale=load_scale)
 lines = build_default_line_inputs()
 pf_result = solve(buses, lines)
 
+shared_scenario = _get_shared_scenario()
+shared_created_at = shared_scenario.created_at
+
 sim_input = sim_service.build_default_input(
+    scenario=shared_scenario,
+    created_at=shared_created_at,
     start_bus_id=start_bus, 
     end_bus_id=end_bus, 
     candidate_site_ids=selected_candidates, 
     load_scale=load_scale
 )
-sim_result = sim_service.run_simulation(sim_input)
+sim_result = sim_service.run_simulation(
+    sim_input,
+    created_at=shared_created_at,
+)
+st.session_state.sgop_shared_scenario = sim_result.scenario
+
+if not selected_candidates:
+    st.warning("후보지가 비어 기본 후보지를 사용합니다.")
+
+st.caption(
+    f"시나리오: {sim_result.scenario.scenario_id}  |  "
+    f"입력: {sim_result.simulation_input.start_bus_id} -> "
+    f"{sim_result.simulation_input.end_bus_id}  |  "
+    f"후보지 {len(sim_result.simulation_input.candidate_site_ids)}개  |  "
+    f"부하 배율 {sim_result.simulation_input.load_scale:.2f}x  |  "
+    f"소스: {sim_result.source.upper()}"
+)
+
+if sim_result.fallback.enabled:
+    st.warning(f"Fallback 사용 중: `{sim_result.fallback.mode}` | {sim_result.fallback.reason}")
+
+for warning in sim_result.warnings:
+    st.caption(f"- {warning}")
 
 # --- 4. 화면 레이아웃 (지도 & 지표) ---
 col_map, col_info = st.columns([2, 1])
@@ -122,7 +200,45 @@ with col_map:
     st_folium(m, width="100%", height=550, returned_objects=[])
 
 with col_info:
-    # --- 5. 설치 전/후 비교 카드 UI ---
+    # --- 5. 1순위 추천안 요약 ---
+    st.subheader("🏆 1순위 추천안")
+    top_recommendation = sim_result.recommendations[0] if sim_result.recommendations else None
+    if top_recommendation is not None:
+        top_route = top_recommendation.route
+        top_score = top_recommendation.score
+        st.markdown(f"**{top_recommendation.candidate_label}**")
+
+        metric_cols = st.columns(2)
+        metric_cols[0].metric(
+            "총점",
+            f"{top_score.total_score:.1f}" if top_score else "-",
+        )
+        metric_cols[1].metric(
+            "경로 길이",
+            f"{top_route.total_distance_km:.1f} km" if top_route else "-",
+        )
+
+        metric_cols = st.columns(2)
+        metric_cols[0].metric(
+            "예상 비용",
+            f"{top_route.estimated_cost:.1f}" if top_route else "-",
+        )
+        metric_cols[1].metric(
+            "경유 노드",
+            f"{len(top_route.path_node_ids)}개" if top_route else "-",
+        )
+
+        if top_route and top_route.summary:
+            st.info(top_route.summary)
+        if top_recommendation.rationale:
+            st.caption(top_recommendation.rationale)
+        st.caption(f"경유 노드: {_format_route_nodes(sim_result)}")
+    else:
+        st.info("추천 결과가 없습니다.")
+
+    st.divider()
+
+    # --- 6. 설치 전/후 비교 카드 UI ---
     st.subheader("📊 설치 전/후 비교 (Deltas)")
     
     if sim_result.deltas:
@@ -140,3 +256,37 @@ with col_info:
     st.divider()
     st.write("**💡 종합 요약**")
     st.success(sim_result.summary)
+
+st.divider()
+st.subheader("후보지별 추천 결과")
+
+recommendation_rows = _build_recommendation_rows(sim_result)
+if recommendation_rows:
+    st.dataframe(
+        pd.DataFrame(recommendation_rows),
+        width="stretch",
+        hide_index=True,
+    )
+else:
+    st.info("표시할 추천 결과가 없습니다.")
+
+with st.expander("후보지별 추천 근거"):
+    if sim_result.recommendations:
+        for recommendation in sim_result.recommendations:
+            score_text = (
+                f"{recommendation.score.total_score:.1f}점"
+                if recommendation.score
+                else "점수 없음"
+            )
+            st.markdown(
+                f"**{recommendation.rank}위. {recommendation.candidate_label}** "
+                f"({score_text})"
+            )
+            if recommendation.rationale:
+                st.write(recommendation.rationale)
+            if recommendation.score and recommendation.score.notes:
+                for note in recommendation.score.notes:
+                    st.caption(f"- {note}")
+            st.divider()
+    else:
+        st.info("추천 근거가 없습니다.")
