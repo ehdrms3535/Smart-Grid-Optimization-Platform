@@ -26,12 +26,6 @@ _STATUS_LABEL: dict[str, str] = {
     "overload": "과부하",
 }
 
-_STATUS_BG: dict[str, str] = {
-    "normal":   "#d5f5e3",
-    "warning":  "#fdebd0",
-    "critical": "#fadbd8",
-    "overload": "#e8daef",
-}
 
 # ── 페이지 설정 ────────────────────────────────────────────────────────────────
 
@@ -122,7 +116,7 @@ with st.sidebar:
     st.divider()
     if st.button("새로고침", use_container_width=True):
         st.cache_data.clear()
-    st.caption(f"데이터 소스: {data_source} (2주차)")
+    st.caption(f"데이터 소스: {data_source}")
 
 # ── 입력 검증 ──────────────────────────────────────────────────────────────────
 
@@ -272,7 +266,7 @@ df = pd.DataFrame(rows)
 
 st.dataframe(
     df,
-    width="stretch",
+    use_container_width=True,
     hide_index=True,
 )
 
