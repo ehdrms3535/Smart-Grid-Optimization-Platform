@@ -142,6 +142,7 @@ with st.spinner("모니터링 결과를 생성하는 중입니다..."):
     )
 
 st.session_state.sgop_shared_scenario = result.scenario
+st.session_state.sgop_monitoring_result = result
 cs = result.congestion_summary
 lines = result.line_statuses
 
