@@ -22,7 +22,7 @@ OPERATING_MARGIN_GAIN_FACTOR = 0.35
 MAX_COUNTERFACTUAL_BONUS = 18.0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CandidateScoreInput:
     """점수 계산에 필요한 최소 입력 묶음."""
 
@@ -36,7 +36,7 @@ class CandidateScoreInput:
     load_scale: float = 1.0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CandidateImpactInput:
     """후보지별 counterfactual delta를 점수에 반영하기 위한 입력."""
 

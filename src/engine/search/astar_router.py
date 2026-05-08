@@ -8,7 +8,7 @@ import math
 from src.data.schemas import RoutePoint, RouteResult
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class BusNodeSpec:
     """탐색 엔진이 경로 계산에 사용하는 최소 버스 정보."""
 
@@ -18,7 +18,7 @@ class BusNodeSpec:
     longitude: float
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RouteCandidateSpec:
     """후보 경로 계산에 필요한 입력."""
 
@@ -30,7 +30,7 @@ class RouteCandidateSpec:
     construction_cost: float
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class GraphEdgeSpec:
     """탐색 그래프의 양방향 간선 최소 스펙."""
 
@@ -39,7 +39,7 @@ class GraphEdgeSpec:
     distance_km: float | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _RouteNodeSpec:
     node_id: str
     label: str
@@ -47,7 +47,7 @@ class _RouteNodeSpec:
     longitude: float
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _RoutePlanVariant:
     plan_name: str
     path_node_ids: list[str]
