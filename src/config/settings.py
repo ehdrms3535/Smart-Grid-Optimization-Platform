@@ -32,7 +32,7 @@ def _read_dotenv(env_file: Path) -> dict[str, str]:
     return values
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Settings:
     root_dir: Path
     src_dir: Path

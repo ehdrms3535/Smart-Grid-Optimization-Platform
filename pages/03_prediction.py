@@ -56,9 +56,102 @@ def _get_shared_scenario() -> ScenarioContext:
     st.session_state.sgop_shared_scenario = scenario
     return scenario
 
+
+def _run_prediction_with_fallback(
+    svc: PredictionService,
+    *,
+    model_source: str,
+    raw_dir: str,
+    load_scale: float,
+    scenario: ScenarioContext,
+    retrain: bool = False,
+    epochs: int = 20,
+) -> PredictionResult:
+    if model_source == "Mock":
+        return svc.run_mock_prediction(
+            load_scale=load_scale,
+            scenario=scenario,
+        )
+
+    try:
+        if model_source == "Baseline":
+            return svc.run_baseline_prediction(
+                raw_dir=raw_dir,
+                load_scale=load_scale,
+                scenario=scenario,
+            )
+        if model_source == "GNN":
+            return svc.run_gnn_prediction(
+                raw_dir=raw_dir,
+                load_scale=load_scale,
+                scenario=scenario,
+            )
+        if model_source == "LSTM+GNN":
+            return svc.run_hybrid_prediction(
+                raw_dir=raw_dir,
+                load_scale=load_scale,
+                forecast_start=None,
+                scenario=scenario,
+                retrain=retrain,
+                epochs=epochs,
+            )
+
+        return svc.run_lstm_prediction(
+            raw_dir=raw_dir,
+            load_scale=load_scale,
+            forecast_start=None,
+            scenario=scenario,
+            retrain=retrain,
+            epochs=epochs,
+        )
+    except Exception as exc:  # noqa: BLE001
+        fallback_result = svc.run_mock_prediction(
+            load_scale=load_scale,
+            scenario=scenario,
+        )
+        fallback_result.summary = (
+            f"{model_source} 예측 실패로 mock 결과를 사용합니다. "
+            f"{fallback_result.summary}"
+        )
+        fallback_result.warnings.insert(
+            0,
+            f"{model_source} 예측 실패 → mock fallback 전환. 원인: {exc}",
+        )
+        fallback_result.fallback.reason = (
+            f"{model_source} 예측이 실패해 mock 패턴 예측 결과를 사용합니다. 원인: {exc}"
+        )
+        return fallback_result
+
+
+_RAW_DIR = str(
+    __import__("pathlib").Path(__file__).resolve().parents[1] / "data" / "raw"
+)
+
 # ── 사이드바 ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("예측 설정")
+
+    model_source = st.radio(
+        "예측 모델",
+        options=["Mock", "Baseline", "LSTM", "GNN", "LSTM+GNN"],
+        index=0,
+        help=(
+            "Mock: 합성 패턴 (즉시)\n"
+            "Baseline: KPX 실데이터 시간대 평균 (빠름)\n"
+            "LSTM: KPX 실데이터 신경망 예측 (학습 필요)\n"
+            "GNN: 인접 노드 그래프 기반 예측\n"
+            "LSTM+GNN: 두 모델 병렬 조합, 실패 시 baseline 전환"
+        ),
+    )
+
+    if model_source in {"LSTM", "LSTM+GNN"}:
+        retrain = st.checkbox("모델 재학습", value=False,
+                              help="체크 시 저장된 모델을 무시하고 재학습합니다.")
+        epochs = st.slider("에포크", 5, 50, 20, step=5)
+    else:
+        retrain, epochs = False, 20
+
+    st.divider()
 
     load_scale = st.slider(
         "부하 배율",
@@ -78,29 +171,105 @@ with st.sidebar:
     st.divider()
     run_btn = st.button("예측 실행", type="primary", use_container_width=True)
 
+    save_btn = st.button(
+        "현재 결과를 시나리오 A로 저장",
+        use_container_width=True,
+        help="저장 후 설정을 바꿔 다시 실행하면 B와 비교합니다.",
+        disabled=st.session_state.get("pred_result") is None,
+    )
+    if save_btn and st.session_state.get("pred_result") is not None:
+        st.session_state.pred_scenario_a = st.session_state.pred_result
+        st.success("시나리오 A 저장 완료")
+
+    if st.session_state.get("pred_scenario_a") is not None:
+        a = st.session_state.pred_scenario_a
+        st.caption(
+            f"시나리오 A: {a.source.upper()} | 배율 {a.load_scale:.0%} | {a.created_at:%m/%d %H:%M}"
+        )
+        if st.button("시나리오 A 초기화", use_container_width=True):
+            st.session_state.pred_scenario_a = None
+            st.rerun()
+
+
 # ── Session State 초기화 ───────────────────────────────────────────────────────
 if "pred_result" not in st.session_state:
     st.session_state.pred_result = None
 if "pred_scale" not in st.session_state:
     st.session_state.pred_scale = None
+if "pred_scenario_a" not in st.session_state:
+    st.session_state.pred_scenario_a = None
 
 # ── 예측 실행 (버튼 or 최초 진입) ─────────────────────────────────────────────
 shared_scenario = _get_shared_scenario()
 cached_result = st.session_state.pred_result
 
-if (
-    run_btn
-    or cached_result is None
-    or cached_result.scenario is None
-    or cached_result.scenario.scenario_id != shared_scenario.scenario_id
-):
-    with st.spinner("예측 계산 중..."):
-        svc = PredictionService()
-        st.session_state.pred_result = svc.run_mock_prediction(
-            load_scale=load_scale,
-            scenario=shared_scenario,
-        )
-        st.session_state.pred_scale = load_scale
+source_changed = (
+    st.session_state.get("pred_source") != model_source
+)
+
+if run_btn or cached_result is None or source_changed:
+    svc = PredictionService()
+
+    if model_source == "Baseline":
+        spinner_msg = "KPX 실데이터 로딩 및 Baseline 예측 중..."
+        with st.spinner(spinner_msg):
+            st.session_state.pred_result = _run_prediction_with_fallback(
+                svc,
+                model_source=model_source,
+                raw_dir=_RAW_DIR,
+                load_scale=load_scale,
+                scenario=shared_scenario,
+            )
+
+    elif model_source == "LSTM":
+        spinner_msg = "LSTM 모델 학습/추론 중... (수 분 소요될 수 있습니다)"
+        with st.spinner(spinner_msg):
+            st.session_state.pred_result = _run_prediction_with_fallback(
+                svc,
+                model_source=model_source,
+                raw_dir=_RAW_DIR,
+                load_scale=load_scale,
+                scenario=shared_scenario,
+                retrain=retrain,
+                epochs=epochs,
+            )
+
+    elif model_source == "GNN":
+        spinner_msg = "GNN 그래프 예측 중..."
+        with st.spinner(spinner_msg):
+            st.session_state.pred_result = _run_prediction_with_fallback(
+                svc,
+                model_source=model_source,
+                raw_dir=_RAW_DIR,
+                load_scale=load_scale,
+                scenario=shared_scenario,
+            )
+
+    elif model_source == "LSTM+GNN":
+        spinner_msg = "LSTM+GNN 병렬 예측 중... (수 분 소요될 수 있습니다)"
+        with st.spinner(spinner_msg):
+            st.session_state.pred_result = _run_prediction_with_fallback(
+                svc,
+                model_source=model_source,
+                raw_dir=_RAW_DIR,
+                load_scale=load_scale,
+                scenario=shared_scenario,
+                retrain=retrain,
+                epochs=epochs,
+            )
+
+    else:  # Mock
+        with st.spinner("Mock 예측 중..."):
+            st.session_state.pred_result = _run_prediction_with_fallback(
+                svc,
+                model_source=model_source,
+                raw_dir=_RAW_DIR,
+                load_scale=load_scale,
+                scenario=shared_scenario,
+            )
+
+    st.session_state.pred_scale = load_scale
+    st.session_state.pred_source = model_source
 
 result: PredictionResult = st.session_state.pred_result
 if result.scenario is not None:
@@ -213,6 +382,42 @@ else:
         xanchor="left", yanchor="bottom",
     )
 
+    # 위험 선로 피크 시각 수직선 (critical/high만, 시각당 1개)
+    shown_hours: set[int] = set()
+    for rline in result.risk_lines:
+        if rline.risk_level not in ("critical", "high"):
+            continue
+        if rline.peak_risk_hour in shown_hours:
+            continue
+        shown_hours.add(rline.peak_risk_hour)
+
+        peak_ts = result.created_at.replace(hour=rline.peak_risk_hour) + (
+            timedelta(days=1)
+            if rline.peak_risk_hour <= result.created_at.hour
+            else timedelta()
+        )
+        peak_str  = peak_ts.isoformat()
+        line_color = _RISK_COLOR.get(rline.risk_level, "#95a5a6")
+        line_label = _RISK_LABEL.get(rline.risk_level, rline.risk_level)
+
+        fig.add_shape(
+            type="line",
+            x0=peak_str, x1=peak_str, y0=0, y1=1,
+            xref="x", yref="paper",
+            line={"dash": "dash", "color": line_color, "width": 1.2},
+        )
+        fig.add_annotation(
+            x=peak_str, y=0.97, xref="x", yref="paper",
+            text=f"{line_label}<br>{rline.line_id}",
+            showarrow=False,
+            font={"color": line_color, "size": 10},
+            xanchor="left", yanchor="top",
+            bgcolor="white",
+            bordercolor=line_color,
+            borderwidth=1,
+            borderpad=3,
+        )
+
     fig.update_layout(
         xaxis_title="시각",
         yaxis_title="예측 부하 (MW)",
@@ -293,3 +498,86 @@ else:
             col_e2.metric("피크 시각", f"{rline.peak_risk_hour:02d}:00")
             col_e3.metric("위험 등급", label)
             st.markdown(f"> {rline.explanation}")
+
+# ── Section 4: 시나리오 비교 ──────────────────────────────────────────────────
+scenario_a: PredictionResult | None = st.session_state.pred_scenario_a
+scenario_b: PredictionResult | None = result
+
+if scenario_a is not None and scenario_a is not scenario_b:
+    st.divider()
+    st.subheader("시나리오 비교")
+
+    label_a = f"A: {scenario_a.source.upper()} {scenario_a.load_scale:.0%}"
+    label_b = f"B: {scenario_b.source.upper()} {scenario_b.load_scale:.0%}"
+
+    st.caption(f"{label_a}  vs  {label_b}")
+
+    # ── 총부하 비교 그래프 ──────────────────────────────────────────────────
+    def _hourly_total(res: PredictionResult) -> dict:
+        totals: dict = {}
+        for p in res.predictions:
+            ts = p.timestamp
+            totals[ts] = totals.get(ts, 0.0) + p.predicted_load_mw
+        return totals
+
+    totals_a = _hourly_total(scenario_a)
+    totals_b = _hourly_total(scenario_b)
+
+    all_ts = sorted(set(totals_a) | set(totals_b))
+
+    fig_cmp = go.Figure()
+    fig_cmp.add_trace(go.Scatter(
+        x=all_ts,
+        y=[totals_a.get(ts, 0) for ts in all_ts],
+        mode="lines",
+        name=label_a,
+        line={"width": 2, "dash": "solid", "color": "#3498db"},
+    ))
+    fig_cmp.add_trace(go.Scatter(
+        x=all_ts,
+        y=[totals_b.get(ts, 0) for ts in all_ts],
+        mode="lines",
+        name=label_b,
+        line={"width": 2, "dash": "dash", "color": "#e74c3c"},
+    ))
+    fig_cmp.update_layout(
+        yaxis_title="전체 예측 부하 (MW)",
+        xaxis_title="시각",
+        hovermode="x unified",
+        height=320,
+        margin={"t": 20, "b": 40},
+        legend={"orientation": "h", "y": -0.25},
+    )
+    st.plotly_chart(fig_cmp, use_container_width=True)
+
+    # ── 위험 선로 비교표 ────────────────────────────────────────────────────
+    risk_a = {r.line_id: r for r in scenario_a.risk_lines}
+    risk_b = {r.line_id: r for r in scenario_b.risk_lines}
+    all_lines = sorted(set(risk_a) | set(risk_b))
+
+    if all_lines:
+        st.markdown("**위험 선로 이용률 비교**")
+        rows = []
+        for lid in all_lines:
+            ra = risk_a.get(lid)
+            rb = risk_b.get(lid)
+            name = f"{ra.from_bus_name}→{ra.to_bus_name}" if ra else f"{rb.from_bus_name}→{rb.to_bus_name}"
+            util_a = f"{int(ra.predicted_utilization * 100)}%" if ra else "—"
+            util_b = f"{int(rb.predicted_utilization * 100)}%" if rb else "—"
+            level_a = ra.risk_level if ra else "low"
+            level_b = rb.risk_level if rb else "low"
+            rows.append({
+                "선로": f"{lid} {name}",
+                f"{label_a}": util_a,
+                f"{label_b}": util_b,
+                "변화": (
+                    f"▲ {int(rb.predicted_utilization*100) - int(ra.predicted_utilization*100)}%p"
+                    if ra and rb and rb.predicted_utilization > ra.predicted_utilization
+                    else f"▼ {int(ra.predicted_utilization*100) - int(rb.predicted_utilization*100)}%p"
+                    if ra and rb
+                    else "신규" if rb else "해소"
+                ),
+            })
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("두 시나리오 모두 위험 선로가 없습니다.")

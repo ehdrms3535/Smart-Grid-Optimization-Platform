@@ -26,12 +26,6 @@ _STATUS_LABEL: dict[str, str] = {
     "overload": "과부하",
 }
 
-_STATUS_BG: dict[str, str] = {
-    "normal":   "#d5f5e3",
-    "warning":  "#fdebd0",
-    "critical": "#fadbd8",
-    "overload": "#e8daef",
-}
 
 # ── 페이지 설정 ────────────────────────────────────────────────────────────────
 
@@ -77,6 +71,31 @@ def _fmt_kpi_delta(kpi: MonitoringKpi) -> str | None:
 
 service = MonitoringService()
 
+
+def _load_monitoring_result(
+    *,
+    service: MonitoringService,
+    data_source: str,
+    scenario: ScenarioContext,
+    load_scale: float,
+) -> MonitoringResult:
+    try:
+        if data_source == "DC Power Flow":
+            return service.run_dc_power_flow(
+                scenario=scenario,
+                load_scale=load_scale,
+            )
+        return service.run_mock_monitoring(
+            scenario=scenario,
+            load_scale=load_scale,
+        )
+    except (TypeError, ValueError) as exc:
+        st.error(f"모니터링 입력 검증 실패: {exc}")
+        st.stop()
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"모니터링 결과 생성 실패: {exc}")
+        st.stop()
+
 with st.sidebar:
     st.header("모니터링 설정")
     load_scale = st.slider(
@@ -97,7 +116,7 @@ with st.sidebar:
     st.divider()
     if st.button("새로고침", use_container_width=True):
         st.cache_data.clear()
-    st.caption(f"데이터 소스: {data_source} (2주차)")
+    st.caption(f"데이터 소스: {data_source}")
 
 # ── 입력 검증 ──────────────────────────────────────────────────────────────────
 
@@ -109,18 +128,15 @@ elif load_scale <= 0.6:
 # ── 데이터 로드 ────────────────────────────────────────────────────────────────
 
 with st.spinner("모니터링 결과를 생성하는 중입니다..."):
-    if data_source == "DC Power Flow":
-        result: MonitoringResult = service.run_dc_power_flow(
-            scenario=_get_shared_scenario(),
-            load_scale=load_scale,
-        )
-    else:
-        result: MonitoringResult = service.run_mock_monitoring(
-            scenario=_get_shared_scenario(),
-            load_scale=load_scale,
-        )
+    result: MonitoringResult = _load_monitoring_result(
+        service=service,
+        data_source=data_source,
+        scenario=_get_shared_scenario(),
+        load_scale=load_scale,
+    )
 
 st.session_state.sgop_shared_scenario = result.scenario
+st.session_state.sgop_monitoring_result = result
 cs = result.congestion_summary
 lines = result.line_statuses
 
@@ -250,7 +266,7 @@ df = pd.DataFrame(rows)
 
 st.dataframe(
     df,
-    width="stretch",
+    use_container_width=True,
     hide_index=True,
 )
 

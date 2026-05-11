@@ -15,9 +15,14 @@ ROUTE_STABILITY_BONUS = 4.0
 DISTANCE_GAP_PENALTY_FACTOR = 0.22
 ROUTE_DISTANCE_NORMALIZATION_KM = 10.0
 BASE_RECOMMENDATION_SCORE = 100.0
+PEAK_UTILIZATION_RELIEF_FACTOR = 0.45
+RISK_LINE_REDUCTION_FACTOR = 3.0
+LOSS_REDUCTION_FACTOR = 0.35
+OPERATING_MARGIN_GAIN_FACTOR = 0.35
+MAX_COUNTERFACTUAL_BONUS = 18.0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CandidateScoreInput:
     """점수 계산에 필요한 최소 입력 묶음."""
 
@@ -29,6 +34,16 @@ class CandidateScoreInput:
     environmental_risk: float
     policy_risk: float
     load_scale: float = 1.0
+
+
+@dataclass(frozen=True)
+class CandidateImpactInput:
+    """후보지별 counterfactual delta를 점수에 반영하기 위한 입력."""
+
+    peak_utilization_improvement: float = 0.0
+    risk_line_reduction: float = 0.0
+    loss_reduction_mw: float = 0.0
+    operating_margin_gain: float = 0.0
 
 
 def calculate_mock_score(score_input: CandidateScoreInput) -> ScoreBreakdown:
@@ -61,6 +76,7 @@ def calculate_score(
     score_input: CandidateScoreInput,
     *,
     route: RouteResult | None = None,
+    impact: CandidateImpactInput | None = None,
 ) -> ScoreBreakdown:
     """2주차용 실제 route 반영 점수 계산 함수."""
 
@@ -74,6 +90,7 @@ def calculate_score(
         if route is not None and route.source in {"astar", "heuristic"}
         else 0.0
     )
+    counterfactual_bonus = _calculate_counterfactual_bonus(impact)
 
     distance_cost = round(
         (normalized_distance * DISTANCE_COST_FACTOR)
@@ -81,7 +98,13 @@ def calculate_score(
         1,
     )
     construction_cost = round(score_input.construction_cost * CONSTRUCTION_COST_FACTOR, 1)
-    congestion_relief = round(score_input.congestion_relief + load_bonus + route_bonus, 1)
+    congestion_relief = round(
+        score_input.congestion_relief
+        + load_bonus
+        + route_bonus
+        + counterfactual_bonus,
+        1,
+    )
     environmental_risk = round(
         score_input.environmental_risk * ENVIRONMENTAL_RISK_FACTOR,
         1,
@@ -103,6 +126,17 @@ def calculate_score(
             "환경 2.2, 정책 2.0, 부하 보정 18.0, route bonus 4.0"
         ),
     ]
+    if impact is not None:
+        notes.extend([
+            (
+                "counterfactual 개선 근거: "
+                f"최대 이용률 {max(0.0, impact.peak_utilization_improvement):.1f}%p 개선, "
+                f"위험 선로 {max(0.0, impact.risk_line_reduction):.1f}개 감소, "
+                f"손실 {max(0.0, impact.loss_reduction_mw):.1f} MW 감소, "
+                f"운영 여유도 {max(0.0, impact.operating_margin_gain):.1f}%p 증가"
+            ),
+            f"counterfactual bonus {counterfactual_bonus:.1f}점 반영",
+        ])
 
     return _build_score_breakdown(
         distance_cost=distance_cost,
@@ -165,6 +199,19 @@ def _resolve_distance_km(
     if route is not None and route.total_distance_km > 0:
         return route.total_distance_km
     return score_input.distance_km
+
+
+def _calculate_counterfactual_bonus(impact: CandidateImpactInput | None) -> float:
+    if impact is None:
+        return 0.0
+
+    bonus = (
+        max(0.0, impact.peak_utilization_improvement) * PEAK_UTILIZATION_RELIEF_FACTOR
+        + max(0.0, impact.risk_line_reduction) * RISK_LINE_REDUCTION_FACTOR
+        + max(0.0, impact.loss_reduction_mw) * LOSS_REDUCTION_FACTOR
+        + max(0.0, impact.operating_margin_gain) * OPERATING_MARGIN_GAIN_FACTOR
+    )
+    return round(min(MAX_COUNTERFACTUAL_BONUS, bonus), 1)
 
 
 def _build_score_breakdown(

@@ -219,7 +219,7 @@ if st.session_state.sim_run:
         st_folium(m, width="100%", height=650, returned_objects=[])
 
     with col_info:
-        # --- 설치 전/후 비교 카드 (나현님 코드) ---
+        # --- 설치 전/후 비교 카드 ---
         st.subheader("📊 설치 전/후 비교")
         if sim_result.deltas:
             for delta in sim_result.deltas:
@@ -233,7 +233,7 @@ if st.session_state.sim_run:
         
         st.divider()
 
-        # --- 🏆 AI 1순위 추천 사유 및 세부 점수표 (나현님 코드) ---
+        # --- 🏆 AI 1순위 추천 사유 및 세부 점수표 ---
         if sim_result.recommendations:
             top_rec = sim_result.recommendations[0]
             st.subheader("🏆 AI 1순위 추천 분석")

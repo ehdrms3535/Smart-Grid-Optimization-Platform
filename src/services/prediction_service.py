@@ -15,6 +15,8 @@ from src.data.schemas import (
 from src.services.result_metadata import (
     build_fallback_info,
     build_fallback_warning,
+    build_no_fallback_info,
+    build_source_warning,
 )
 
 # ── 13-노드 정의 ───────────────────────────────────────────────────────────────
@@ -149,10 +151,212 @@ class PredictionService:
             fallback=build_fallback_info(
                 mode="mock_data",
                 reason="실제 예측 모델 대신 PredictionService의 mock 패턴 예측 결과를 사용합니다.",
-                primary_path="src.engine.forecast.feature_builder -> baseline/lstm forecaster",
+                primary_path="src.engine.forecast.feature_builder -> baseline/lstm/gnn forecaster",
                 active_path="src.services.prediction_service.PredictionService.run_mock_prediction",
             ),
         )
+
+    def run_baseline_prediction(
+        self,
+        raw_dir: str,
+        load_scale: float = 1.0,
+        forecast_start: datetime | None = None,
+        scenario: ScenarioContext | None = None,
+    ) -> PredictionResult:
+        """KPX 실데이터 기반 baseline 예측 결과를 반환한다.
+
+        Parameters
+        ----------
+        raw_dir        : sukub*.csv 가 있는 디렉터리 경로
+        load_scale     : 부하 배율
+        forecast_start : 예측 기준 시각 (None 이면 현재 시각)
+        """
+        from src.data.adapters.public_data_adapter import load_kpx_csvs
+
+        load_df = load_kpx_csvs(raw_dir)
+        now = self._resolve_forecast_start(load_df, forecast_start)
+        resolved_scenario = self._resolve_scenario(scenario, now)
+
+        load_df = self._apply_load_scale(load_df, load_scale)
+        predictions = self._predict_baseline(
+            load_df=load_df,
+            forecast_start=now,
+        )
+
+        return self._build_prediction_result(
+            scenario=resolved_scenario,
+            created_at=now,
+            load_scale=load_scale,
+            predictions=predictions,
+            source="baseline",
+            warnings=[],
+        )
+
+    def run_lstm_prediction(
+        self,
+        raw_dir: str,
+        load_scale: float = 1.0,
+        forecast_start: datetime | None = None,
+        scenario: ScenarioContext | None = None,
+        retrain: bool = False,
+        epochs: int = 20,
+    ) -> PredictionResult:
+        """LSTM 학습/추론 기반 24시간 예측 결과를 반환한다.
+
+        Parameters
+        ----------
+        raw_dir        : sukub*.csv 가 있는 디렉터리 경로
+        load_scale     : 부하 배율
+        forecast_start : 예측 기준 시각 (None 이면 데이터 마지막 시각)
+        retrain        : True 이면 저장된 모델 무시하고 재학습
+        epochs         : 재학습 시 에포크 수
+        """
+        load_df = self._load_weather_history(raw_dir)
+        data_end = load_df["timestamp"].max().replace(minute=0, second=0, microsecond=0)
+        now = (forecast_start or data_end).replace(minute=0, second=0, microsecond=0)
+        if now > data_end:
+            now = data_end
+        resolved_scenario = self._resolve_scenario(scenario, now)
+        history_df = self._apply_load_scale(load_df, load_scale)
+        target_features = self._build_target_features(
+            load_df=history_df,
+            forecast_start=now,
+        )
+        predictions, warnings = self._predict_lstm(
+            training_df=load_df,
+            history_df=history_df,
+            forecast_start=now,
+            target_features=target_features,
+            retrain=retrain,
+            epochs=epochs,
+        )
+
+        return self._build_prediction_result(
+            scenario=resolved_scenario,
+            created_at=now,
+            load_scale=load_scale,
+            predictions=predictions,
+            source="lstm",
+            warnings=warnings,
+        )
+
+    def run_gnn_prediction(
+        self,
+        raw_dir: str,
+        load_scale: float = 1.0,
+        forecast_start: datetime | None = None,
+        scenario: ScenarioContext | None = None,
+    ) -> PredictionResult:
+        """그래프 기반 최소 GNN 예측 결과를 반환한다."""
+        load_df = self._load_weather_history(raw_dir)
+        now = self._resolve_forecast_start(load_df, forecast_start)
+        resolved_scenario = self._resolve_scenario(scenario, now)
+
+        history_df = self._apply_load_scale(load_df, load_scale)
+        target_features = self._build_target_features(
+            load_df=history_df,
+            forecast_start=now,
+        )
+        predictions = self._predict_gnn(
+            history_df=history_df,
+            forecast_start=now,
+            target_features=target_features,
+        )
+
+        return self._build_prediction_result(
+            scenario=resolved_scenario,
+            created_at=now,
+            load_scale=load_scale,
+            predictions=predictions,
+            source="gnn",
+            warnings=[],
+        )
+
+    def run_hybrid_prediction(
+        self,
+        raw_dir: str,
+        load_scale: float = 1.0,
+        forecast_start: datetime | None = None,
+        scenario: ScenarioContext | None = None,
+        retrain: bool = False,
+        epochs: int = 20,
+    ) -> PredictionResult:
+        """LSTM + GNN 병렬 조합 예측을 반환하고 실패 시 baseline 으로 전환한다."""
+        load_df = self._load_weather_history(raw_dir)
+        now = self._resolve_forecast_start(load_df, forecast_start)
+        resolved_scenario = self._resolve_scenario(scenario, now)
+        history_df = self._apply_load_scale(load_df, load_scale)
+        target_features = self._build_target_features(
+            load_df=history_df,
+            forecast_start=now,
+        )
+
+        lstm_predictions: list[HourlyLoadPrediction] | None = None
+        gnn_predictions: list[HourlyLoadPrediction] | None = None
+        lstm_warnings: list[str] = []
+        branch_errors: list[str] = []
+
+        try:
+            lstm_predictions, lstm_warnings = self._predict_lstm(
+                training_df=load_df,
+                history_df=history_df,
+                forecast_start=now,
+                target_features=target_features,
+                retrain=retrain,
+                epochs=epochs,
+            )
+        except Exception as exc:  # noqa: BLE001
+            branch_errors.append(f"LSTM 실패: {_summarize_prediction_error(exc)}")
+
+        try:
+            gnn_predictions = self._predict_gnn(
+                history_df=history_df,
+                forecast_start=now,
+                target_features=target_features,
+            )
+        except Exception as exc:  # noqa: BLE001
+            branch_errors.append(f"GNN 실패: {_summarize_prediction_error(exc)}")
+
+        if lstm_predictions is not None and gnn_predictions is not None:
+            predictions = _combine_prediction_lists(
+                primary=lstm_predictions,
+                secondary=gnn_predictions,
+                primary_weight=0.65,
+                secondary_weight=0.35,
+            )
+            warnings = [
+                build_source_warning("PredictionService", "hybrid"),
+                "LSTM 65% + GNN 35% 가중 평균으로 병렬 조합 예측을 사용합니다.",
+            ]
+            warnings.extend(f"LSTM: {warning}" for warning in lstm_warnings)
+
+            return self._build_prediction_result(
+                scenario=resolved_scenario,
+                created_at=now,
+                load_scale=load_scale,
+                predictions=predictions,
+                source="hybrid",
+                warnings=warnings,
+            )
+
+        baseline_result = self.run_baseline_prediction(
+            raw_dir=raw_dir,
+            load_scale=load_scale,
+            forecast_start=now,
+            scenario=resolved_scenario,
+        )
+        baseline_result.summary = (
+            "LSTM+GNN 병렬 예측 실패로 baseline 결과를 사용합니다. "
+            f"{baseline_result.summary}"
+        )
+        baseline_result.warnings = branch_errors + baseline_result.warnings
+        baseline_result.fallback = build_fallback_info(
+            mode="baseline_model",
+            reason="LSTM+GNN 병렬 예측 중 하나 이상이 실패해 baseline 예측으로 전환했습니다.",
+            primary_path="src.engine.forecast.lstm_forecaster + src.engine.forecast.gnn_forecaster",
+            active_path="src.services.prediction_service.PredictionService.run_baseline_prediction",
+        )
+        return baseline_result
 
     # ── 내부 ──────────────────────────────────────────────────────────────────
 
@@ -188,27 +392,31 @@ class PredictionService:
         (2주차에 DC Power Flow 결과로 교체 예정)
         """
         bus_name = {b["bus_id"]: b["name"] for b in _BUSES}
-        load_map: dict[tuple[int, str], float] = {
-            (p.timestamp.hour, p.bus_id): p.predicted_load_mw
+
+        # timestamp 기준으로 인덱싱 — (timestamp, bus_id) → load_mw
+        load_map: dict[tuple, float] = {
+            (p.timestamp, p.bus_id): p.predicted_load_mw
             for p in predictions
         }
+        timestamps = sorted({p.timestamp for p in predictions})
 
         risk_lines: list[RiskLine] = []
         for line in _LINES:
             fbus, tbus, limit = line["from"], line["to"], line["limit_mw"]
 
-            peak_util, peak_h = 0.0, 0
-            for h in range(1, 25):
-                f_load = load_map.get((h, fbus), 0.0)
-                t_load = load_map.get((h, tbus), 0.0)
+            peak_util, peak_ts = 0.0, timestamps[0] if timestamps else None
+            for ts in timestamps:
+                f_load = load_map.get((ts, fbus), 0.0)
+                t_load = load_map.get((ts, tbus), 0.0)
                 util = abs(f_load - t_load) * 0.40 / limit
                 if util > peak_util:
-                    peak_util, peak_h = util, h
+                    peak_util, peak_ts = util, ts
 
             level = _classify_risk(peak_util)
             if level == "low":
                 continue
 
+            peak_h = peak_ts.hour if peak_ts is not None else 0
             risk_lines.append(RiskLine(
                 line_id=line["line_id"],
                 from_bus=fbus,
@@ -278,8 +486,160 @@ class PredictionService:
     def _build_warnings(self) -> list[str]:
         return [
             build_fallback_warning("PredictionService", "mock_data"),
-            "실제 baseline/LSTM 모델이 연결되기 전까지 합성 패턴 기반 예측을 사용합니다.",
+            "실제 baseline/LSTM/GNN 모델이 연결되기 전까지 합성 패턴 기반 예측을 사용합니다.",
         ]
+
+    def _build_prediction_result(
+        self,
+        *,
+        scenario: ScenarioContext,
+        created_at: datetime,
+        load_scale: float,
+        predictions: list[HourlyLoadPrediction],
+        source: str,
+        warnings: list[str],
+    ) -> PredictionResult:
+        risk_lines = self._compute_risk_lines(predictions, load_scale)
+        summary = self._build_summary(created_at, predictions, risk_lines)
+        return PredictionResult(
+            scenario_id=scenario.scenario_id,
+            created_at=created_at,
+            load_scale=load_scale,
+            forecast_horizon_h=24,
+            predictions=predictions,
+            risk_lines=risk_lines,
+            summary=summary,
+            source=source,
+            scenario=scenario,
+            warnings=warnings,
+            fallback=build_no_fallback_info(),
+        )
+
+    def _resolve_forecast_start(
+        self,
+        load_df: pd.DataFrame,
+        forecast_start: datetime | None,
+    ) -> datetime:
+        """forecast_start 가 데이터 범위를 벗어나면 데이터 마지막 시각으로 고정한다."""
+        data_end = load_df["timestamp"].max().replace(minute=0, second=0, microsecond=0)
+        now = (forecast_start or data_end).replace(minute=0, second=0, microsecond=0)
+        return min(now, data_end)
+
+    def _load_weather_history(self, raw_dir: str) -> pd.DataFrame:
+        from src.data.adapters.public_data_adapter import load_kpx_with_weather
+
+        return load_kpx_with_weather(raw_dir)
+
+    def _apply_load_scale(self, load_df: pd.DataFrame, load_scale: float) -> pd.DataFrame:
+        if load_scale == 1.0:
+            return load_df
+
+        scaled_df = load_df.copy()
+        scaled_df["load_mw"] = scaled_df["load_mw"] * load_scale
+        return scaled_df
+
+    def _build_target_features(
+        self,
+        *,
+        load_df: pd.DataFrame,
+        forecast_start: datetime,
+    ) -> list:
+        from src.engine.forecast.feature_builder import build_prediction_feature_matrix
+
+        return build_prediction_feature_matrix(
+            load_df=load_df,
+            forecast_start=forecast_start,
+        )
+
+    def _predict_baseline(
+        self,
+        *,
+        load_df: pd.DataFrame,
+        forecast_start: datetime,
+    ) -> list[HourlyLoadPrediction]:
+        from src.engine.forecast.baseline_forecaster import BaselineForecaster
+
+        forecaster = BaselineForecaster().fit(load_df)
+        target_features = self._build_target_features(
+            load_df=load_df,
+            forecast_start=forecast_start,
+        )
+        return forecaster.predict(target_features=target_features)
+
+    def _predict_lstm(
+        self,
+        *,
+        training_df: pd.DataFrame,
+        history_df: pd.DataFrame,
+        forecast_start: datetime,
+        target_features: list,
+        retrain: bool,
+        epochs: int,
+    ) -> tuple[list[HourlyLoadPrediction], list[str]]:
+        from src.engine.forecast.lstm_forecaster import LSTMForecaster
+
+        forecaster = LSTMForecaster()
+        if retrain or not forecaster.is_trained():
+            forecaster.fit(training_df, epochs=epochs)
+
+        warnings: list[str] = []
+        try:
+            # lookback 윈도우는 원본 스케일 데이터 사용 (load_scale은 예측 후 적용)
+            predictions = forecaster.predict(
+                history_df=training_df,
+                forecast_start=forecast_start,
+                target_features=target_features,
+            )
+        except Exception as exc:
+            if retrain or not _is_recoverable_lstm_model_error(exc):
+                raise
+
+            forecaster = LSTMForecaster()
+            forecaster.fit(training_df, epochs=epochs)
+            predictions = forecaster.predict(
+                history_df=training_df,
+                forecast_start=forecast_start,
+                target_features=target_features,
+            )
+            warnings.append(
+                "저장된 LSTM 모델 로드에 실패해 현재 환경에서 재학습 후 예측을 수행했습니다."
+            )
+            warnings.append(f"LSTM 모델 재학습 원인: {_summarize_lstm_model_error(exc)}")
+
+        # load_scale 을 예측 결과에 사후 적용
+        scale = history_df["load_mw"].sum() / training_df["load_mw"].sum() if training_df["load_mw"].sum() > 0 else 1.0
+        if abs(scale - 1.0) > 0.001:
+            predictions = [
+                HourlyLoadPrediction(
+                    timestamp=p.timestamp,
+                    bus_id=p.bus_id,
+                    predicted_load_mw=round(p.predicted_load_mw * scale, 1),
+                    confidence_lower_mw=round(p.confidence_lower_mw * scale, 1),
+                    confidence_upper_mw=round(p.confidence_upper_mw * scale, 1),
+                )
+                for p in predictions
+            ]
+
+        return predictions, warnings
+
+    def _predict_gnn(
+        self,
+        *,
+        history_df: pd.DataFrame,
+        forecast_start: datetime,
+        target_features: list,
+    ) -> list[HourlyLoadPrediction]:
+        from src.engine.forecast.gnn_forecaster import GNNForecaster
+
+        return (
+            GNNForecaster()
+            .fit(history_df)
+            .predict(
+                history_df=history_df,
+                forecast_start=forecast_start,
+                target_features=target_features,
+            )
+        )
 
 
 # ── 순수 함수 ──────────────────────────────────────────────────────────────────
@@ -294,6 +654,108 @@ def _classify_risk(utilization: float) -> str:
     return "low"
 
 
+def _is_recoverable_lstm_model_error(exc: Exception) -> bool:
+    message = str(exc)
+    recoverable_markers = (
+        "could not be deserialized properly",
+        "quantization_config",
+        "load_model",
+    )
+    return any(marker in message for marker in recoverable_markers)
+
+
+def _summarize_lstm_model_error(exc: Exception) -> str:
+    message = str(exc)
+    if "quantization_config" in message:
+        return "저장된 model.keras가 현재 Keras 버전의 Dense 설정과 호환되지 않았습니다."
+    if "could not be deserialized properly" in message:
+        return "저장된 model.keras를 현재 Keras 환경에서 역직렬화하지 못했습니다."
+    if "load_model" in message:
+        return "저장된 LSTM 모델 로드에 실패했습니다."
+    return message.splitlines()[0] if message else exc.__class__.__name__
+
+
+def _summarize_prediction_error(exc: Exception) -> str:
+    message = str(exc).strip()
+    return message.splitlines()[0] if message else exc.__class__.__name__
+
+
+def _combine_prediction_lists(
+    *,
+    primary: list[HourlyLoadPrediction],
+    secondary: list[HourlyLoadPrediction],
+    primary_weight: float,
+    secondary_weight: float,
+) -> list[HourlyLoadPrediction]:
+    secondary_map = {
+        (prediction.timestamp, prediction.bus_id): prediction
+        for prediction in secondary
+    }
+    combined: list[HourlyLoadPrediction] = []
+    total_weight = primary_weight + secondary_weight
+
+    for prediction in primary:
+        key = (prediction.timestamp, prediction.bus_id)
+        secondary_prediction = secondary_map.get(key)
+        if secondary_prediction is None:
+            raise ValueError(f"병렬 조합 대상 예측 키가 맞지 않습니다: {key}")
+
+        predicted_load = (
+            (prediction.predicted_load_mw * primary_weight)
+            + (secondary_prediction.predicted_load_mw * secondary_weight)
+        ) / total_weight
+        lower_bound = (
+            (prediction.confidence_lower_mw * primary_weight)
+            + (secondary_prediction.confidence_lower_mw * secondary_weight)
+        ) / total_weight
+        upper_bound = (
+            (prediction.confidence_upper_mw * primary_weight)
+            + (secondary_prediction.confidence_upper_mw * secondary_weight)
+        ) / total_weight
+        combined.append(
+            HourlyLoadPrediction(
+                timestamp=prediction.timestamp,
+                bus_id=prediction.bus_id,
+                predicted_load_mw=round(predicted_load, 1),
+                confidence_lower_mw=round(max(0.0, lower_bound), 1),
+                confidence_upper_mw=round(max(predicted_load, upper_bound), 1),
+            )
+        )
+
+    return combined
+
+
+def _time_zone_label(hour: int) -> str:
+    if 6 <= hour < 11:
+        return "오전 피크 시간대"
+    if 11 <= hour < 14:
+        return "정오 전후"
+    if 14 <= hour < 19:
+        return "오후 피크 시간대"
+    if 19 <= hour < 23:
+        return "저녁 고부하 시간대"
+    return "심야·새벽 시간대"
+
+
+def _scale_note(load_scale: float) -> str:
+    if abs(load_scale - 1.0) <= 0.01:
+        return ""
+    diff = int((load_scale - 1.0) * 100)
+    sign = "+" if diff > 0 else ""
+    return f" 부하 배율 {load_scale:.0%} 적용으로 평시 대비 {sign}{diff}% 수준입니다."
+
+
+def _action_note(utilization: float, risk_level: str) -> str:
+    pct = int(utilization * 100)
+    if risk_level == "critical":
+        if pct >= 110:
+            return "즉각적인 발전 재배치 및 우회 경로 투입이 필요합니다. 계통 보호 장치 동작 위험이 있습니다."
+        return "즉각적인 우회 경로 구성 또는 발전 재배치를 시행하십시오."
+    if risk_level == "high":
+        return "ESS 방전 또는 인근 선로 부하 분산을 검토하십시오. 수요 반응 프로그램 발동도 고려할 수 있습니다."
+    return "현재는 관리 범위 내이나 추세를 지속 모니터링하십시오."
+
+
 def _build_explanation(
     line_id: str,
     from_name: str,
@@ -305,22 +767,21 @@ def _build_explanation(
 ) -> str:
     pct = int(utilization * 100)
     hour_str = f"{peak_hour:02d}:00"
-    scale_note = (
-        f" (부하 배율 {load_scale:.0%} 적용)" if abs(load_scale - 1.0) > 0.01 else ""
-    )
+    zone = _time_zone_label(peak_hour)
+    scale = _scale_note(load_scale)
+    action = _action_note(utilization, risk_level)
+
     if risk_level == "critical":
         return (
-            f"{from_name}–{to_name} 선로({line_id})는 {hour_str}에 이용률 {pct}%로 "
-            f"열적한계를 초과할 위험이 있습니다{scale_note}. "
-            f"즉각적인 우회 경로 또는 발전 재배치가 필요합니다."
+            f"{from_name}–{to_name} 선로({line_id})는 {hour_str} ({zone})에 "
+            f"이용률 {pct}%로 열적 한계를 초과할 위험이 있습니다.{scale} {action}"
         )
     if risk_level == "high":
         return (
-            f"{from_name}–{to_name} 선로({line_id})는 {hour_str}에 이용률 {pct}%로 "
-            f"혼잡 임계치에 근접합니다{scale_note}. "
-            f"수요 측 대응 또는 ESS 방전 검토를 권장합니다."
+            f"{from_name}–{to_name} 선로({line_id})는 {hour_str} ({zone})에 "
+            f"이용률 {pct}%로 혼잡 임계치에 근접합니다.{scale} {action}"
         )
     return (
-        f"{from_name}–{to_name} 선로({line_id})는 {hour_str}에 이용률 {pct}%로 "
-        f"관리 수준 내에 있으나 지속 모니터링이 필요합니다{scale_note}."
+        f"{from_name}–{to_name} 선로({line_id})는 {hour_str} ({zone})에 "
+        f"이용률 {pct}%입니다.{scale} {action}"
     )
