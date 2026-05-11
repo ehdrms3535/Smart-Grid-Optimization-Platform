@@ -480,3 +480,13 @@
   - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
   - `.venv310/bin/python -m pytest tests -q` -> 39개 통과
 - 다음 작업: 박차오름 범위에서는 통합 병목이 닫혔으므로, 후속으로는 Beta가 `ScenarioService` 저장/불러오기 UI를 붙일 때 새 통합 테스트 계약을 깨지 않는지 확인한다. 별도 요청이 있으면 Priority 5의 overlay 데이터 계약과 fallback 문구 잔여 불일치를 이어서 정리한다.
+
+### 2026-05-11 박차오름 4주차 우선순위 5 공통 overlay 계약 정리 완료
+- 작업: Alpha/Beta가 지도와 표를 동기화할 수 있도록 UI 구현 없이 공통 overlay 계약을 추가했다. `src/data/schemas.py`에 `MapOverlayPoint`, `MapOverlayLine`, `MapOverlayRoute`, `MapOverlayResult`를 정의해 버스, 선로, 송전탑 후보지, A* 추천 경로, 예측 위험 선로를 같은 형태로 넘길 수 있게 했다. `MapOverlayService`는 Monitoring actual 선로 상태, Simulation 후보지/추천 경로, Prediction 위험 선로를 overlay 결과로 변환하며, 좌표는 `EPSG:4326`과 `elevation_m` 슬롯을 유지한다. 고도는 아직 조회하지 않으므로 warning에 남기고, VWorld WebGL을 쓰지 못하거나 MVP에서 보류할 때는 `map_2_5d` fallback을 overlay 결과에 반영한다. API key 값은 overlay warnings/fallback reason에 노출하지 않도록 테스트로 고정했다.
+- 수정 파일: `src/data/schemas.py`, `src/services/map_overlay_service.py`, `tests/test_map_overlay_contract.py`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m pytest tests/test_map_overlay_contract.py -q` -> 4개 통과
+  - `.venv310/bin/python -m pytest tests/test_service_integration_contract.py -q` -> 5개 통과
+  - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
+  - `.venv310/bin/python -m pytest tests -q` -> 43개 통과
+- 다음 작업: 박차오름 4주차 범위는 완료로 보고, Alpha는 Monitoring 표/지도 동기화에 `MapOverlayResult.lines`의 `line_id`를 사용하고, Beta는 Simulation 지도 레이어에 `MapOverlayResult.points/routes`를 연결하면 된다. Gamma의 예측 품질과 LSTM slow/integration 테스트는 별도 범위로 남긴다.
