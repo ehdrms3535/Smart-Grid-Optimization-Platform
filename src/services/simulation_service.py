@@ -215,7 +215,7 @@ class SimulationService:
                 created_at=resolved_at,
             )
             fallback_result.warnings.insert(
-                0,
+                1,
                 f"A* route/score 실패 → mock fallback 전환. 원인: {exc}",
             )
             fallback_result.fallback = build_fallback_info(

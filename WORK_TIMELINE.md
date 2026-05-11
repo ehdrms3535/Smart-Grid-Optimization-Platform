@@ -470,3 +470,13 @@
   - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
   - `.venv310/bin/python -c "from src.data.adapters.vworld_adapter import get_map_capability; c=get_map_capability(domain='localhost:8501', prefer_webgl=False); print(c.rendering_mode, c.fallback.mode, bool(c.webgl_script_url))"` -> `map_2_5d map_2_5d True`
 - 다음 작업: 박차오름 4주차 우선순위 4로 넘어가 Monitoring actual → Simulation actual → Prediction mock/baseline 흐름의 공통 `scenario_id`, `source`, `fallback`, `warnings` 계약을 통합 테스트로 고정한다.
+
+### 2026-05-11 박차오름 4주차 우선순위 4 서비스 통합 계약 테스트 완료
+- 작업: `Monitoring actual -> Simulation actual -> Prediction baseline/mock` 흐름이 같은 `ScenarioContext`를 유지하는지 통합 테스트로 고정했다. 새 테스트는 공통 `scenario_id`, 허용 `source`, 허용 `fallback.mode`, fallback 사용 시 `reason/primary_path/active_path/warnings` 존재 여부, Monitoring `dc_power_flow`, Simulation `astar`, Prediction `baseline` happy path를 함께 검증한다. 또한 Monitoring DC 실패, Simulation A* 실패, Prediction hybrid branch 실패를 monkeypatch로 강제해 전체 예외 대신 mock/baseline fallback 결과가 반환되는 smoke test를 추가했다. 이 과정에서 fallback 경로의 첫 warning 문구가 공통 규칙을 따르도록 Monitoring/Simulation 예외 경로의 삽입 위치를 보정했고, Prediction actual 결과는 `PredictionService는 현재 <source> 결과를 반환합니다.` source warning을 갖도록 정리했다.
+- 수정 파일: `tests/test_service_integration_contract.py`, `src/services/monitoring_service.py`, `src/services/simulation_service.py`, `src/services/prediction_service.py`, `tests/test_prediction_risk_and_fallback.py`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m pytest tests/test_service_integration_contract.py -q` -> 5개 통과
+  - `.venv310/bin/python -m pytest tests/test_prediction_risk_and_fallback.py -q` -> 4개 통과
+  - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
+  - `.venv310/bin/python -m pytest tests -q` -> 39개 통과
+- 다음 작업: 박차오름 범위에서는 통합 병목이 닫혔으므로, 후속으로는 Beta가 `ScenarioService` 저장/불러오기 UI를 붙일 때 새 통합 테스트 계약을 깨지 않는지 확인한다. 별도 요청이 있으면 Priority 5의 overlay 데이터 계약과 fallback 문구 잔여 불일치를 이어서 정리한다.
