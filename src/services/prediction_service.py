@@ -349,7 +349,11 @@ class PredictionService:
             "LSTM+GNN 병렬 예측 실패로 baseline 결과를 사용합니다. "
             f"{baseline_result.summary}"
         )
-        baseline_result.warnings = branch_errors + baseline_result.warnings
+        baseline_result.warnings = [
+            build_fallback_warning("PredictionService", "baseline_model"),
+            *branch_errors,
+            *baseline_result.warnings,
+        ]
         baseline_result.fallback = build_fallback_info(
             mode="baseline_model",
             reason="LSTM+GNN 병렬 예측 중 하나 이상이 실패해 baseline 예측으로 전환했습니다.",
@@ -501,6 +505,10 @@ class PredictionService:
     ) -> PredictionResult:
         risk_lines = self._compute_risk_lines(predictions, load_scale)
         summary = self._build_summary(created_at, predictions, risk_lines)
+        source_warning = build_source_warning("PredictionService", source)
+        result_warnings = list(warnings)
+        if source_warning not in result_warnings:
+            result_warnings.insert(0, source_warning)
         return PredictionResult(
             scenario_id=scenario.scenario_id,
             created_at=created_at,
@@ -511,7 +519,7 @@ class PredictionService:
             summary=summary,
             source=source,
             scenario=scenario,
-            warnings=warnings,
+            warnings=result_warnings,
             fallback=build_no_fallback_info(),
         )
 

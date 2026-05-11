@@ -49,6 +49,24 @@ FallbackMode = Literal[
     "map_2_5d",
 ]
 
+MapOverlayKind = Literal[
+    "bus",
+    "line",
+    "tower_candidate",
+    "route",
+    "route_point",
+    "risk_line",
+]
+
+MapOverlayStatus = Literal[
+    "normal",
+    "warning",
+    "critical",
+    "overload",
+    "unknown",
+    "selected",
+]
+
 
 # ── 공통 메타데이터 ────────────────────────────────────────────────────────────
 
@@ -82,6 +100,78 @@ class TimeSeriesPoint:
     timestamp: datetime
     value: float
     label: str = ""
+
+
+# ── 지도/오버레이 공통 계약 ───────────────────────────────────────────────────
+
+@dataclass
+class MapOverlayPoint:
+    """지도 위에 표시할 단일 지점.
+
+    latitude/longitude는 화면 표시용 좌표이고, elevation_m은 고도 또는 지형
+    높이 조회 결과를 담기 위한 3축 좌표 슬롯이다. 고도 조회 전에는 None으로
+    두고 warnings/fallback에 단순화 여부를 남긴다.
+    """
+
+    overlay_id: str
+    label: str
+    kind: MapOverlayKind
+    latitude: float
+    longitude: float
+    elevation_m: float | None = None
+    coordinate_system: str = "EPSG:4326"
+    elevation_source: str = ""
+    status: MapOverlayStatus = "unknown"
+    risk_level: RiskLevel | None = None
+    source: ResultSource = "manual"
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class MapOverlayLine:
+    """지도 위에 표시할 선로 또는 예측 위험 선."""
+
+    overlay_id: str
+    label: str
+    kind: MapOverlayKind
+    from_point: MapOverlayPoint
+    to_point: MapOverlayPoint
+    status: MapOverlayStatus = "unknown"
+    risk_level: RiskLevel | None = None
+    source: ResultSource = "manual"
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class MapOverlayRoute:
+    """A* 추천 경로를 지도 계층에 넘기기 위한 공통 형식."""
+
+    overlay_id: str
+    label: str
+    route_id: str
+    candidate_id: str = ""
+    rank: int | None = None
+    points: list[MapOverlayPoint] = field(default_factory=list)
+    total_distance_km: float = 0.0
+    estimated_cost: float = 0.0
+    source: ResultSource = "manual"
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class MapOverlayResult:
+    """지도/표 동기화 계층이 공통으로 소비하는 overlay 묶음."""
+
+    scenario: ScenarioContext
+    created_at: datetime
+    source: ResultSource
+    points: list[MapOverlayPoint] = field(default_factory=list)
+    lines: list[MapOverlayLine] = field(default_factory=list)
+    routes: list[MapOverlayRoute] = field(default_factory=list)
+    summary: str = ""
+    warnings: list[str] = field(default_factory=list)
+    fallback: FallbackInfo = field(default_factory=lambda: FallbackInfo(enabled=False))
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 # ── 모니터링 ──────────────────────────────────────────────────────────────────

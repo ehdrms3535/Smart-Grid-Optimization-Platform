@@ -110,7 +110,8 @@ def test_hybrid_prediction_falls_back_to_baseline_when_branch_fails(
     assert result.source == "baseline"
     assert result.fallback.enabled is True
     assert result.fallback.mode == "baseline_model"
-    assert "LSTM 실패" in result.warnings[0]
+    assert result.warnings[0] == "PredictionService는 현재 `baseline_model` fallback 결과를 반환합니다."
+    assert any("LSTM 실패" in warning for warning in result.warnings)
     assert "baseline 예측으로 전환" in result.fallback.reason
 
 

@@ -429,3 +429,64 @@
   - `.venv310/bin/python -c "import runpy; runpy.run_path('pages/02_simulation.py'); print('simulation-page-run-ok')"` -> 통과, Streamlit bare-mode 경고 확인
   - `.venv310/bin/python -m pytest tests -q` -> 11개 통과
 - 다음 작업: Beta 3주차 범위의 시나리오 저장/불러오기 또는 `ScenarioService` 저장 책임 구현을 진행한다.
+
+### 2026-05-11 박차오름 4주차 우선순위 1 ScenarioService 최소 구현 완료
+- 작업: 박차오름 4주차 통합 로직 정리의 선행 작업으로 `ScenarioService` 저장 계층을 구현했다. 기본 저장 위치는 `data/private/scenarios.json`로 두고, 테스트 가능하도록 `storage_path` 주입을 지원한다. `ScenarioContext`를 JSON으로 저장/조회/목록화/삭제할 수 있게 했고, `created_at`은 ISO 문자열로 직렬화 후 복원한다. 같은 `scenario_id` 저장은 덮어쓰기 방식으로 처리하며, 빈 `scenario_id`, 잘못된 JSON 저장소, 잘못된 레코드는 명확한 예외를 내도록 정리했다. 페이지 UI 연결은 Beta 범위로 남기고 서비스 계약과 테스트만 닫았다.
+- 수정 파일: `src/services/scenario_service.py`, `tests/test_scenario_service.py`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m pytest tests/test_scenario_service.py -q` -> 10개 통과
+  - `.venv310/bin/python -m pytest tests -q` -> 21개 통과
+  - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
+  - `.venv310/bin/python -c "from datetime import datetime; from tempfile import TemporaryDirectory; from pathlib import Path; from src.data.schemas import ScenarioContext; from src.services.scenario_service import ScenarioService; d=TemporaryDirectory(); svc=ScenarioService(Path(d.name)/'scenarios.json'); s=ScenarioContext(scenario_id='demo', title='Demo', created_at=datetime(2026,1,1)); svc.save_scenario(s); print(svc.load_scenario('demo').scenario_id, len(svc.list_scenarios()))"` -> `demo 1`
+- 다음 작업: 박차오름 4주차 우선순위 2로 넘어가 A* 비용 함수와 추천 점수 설명 가능성을 보정한다. Beta가 UI를 붙일 때는 `ScenarioService.save_scenario()`, `list_scenarios()`, `load_scenario()`를 사용하면 된다.
+
+### 2026-05-11 박차오름 4주차 우선순위 2 A* 비용/점수 설명 보정 완료
+- 작업: A* 경로 보정과 추천 점수화가 발표 가능한 기준으로 설명되도록 정리했다. `astar_router.py`의 우회 거리, 릴레이 홉, 반복 노드, 고부하, 예상 비용 계수를 이름 있는 정책 상수로 분리하고, `RouteResult.summary`에 실제 거리/우회/릴레이/반복/고부하 패널티를 함께 반영한다는 설명을 남겼다. `score_function.py`는 총점 산식, 경로 입력, 비용 반영, 혼잡 보상, counterfactual 개선 근거가 `ScoreBreakdown.notes`에 나뉘어 들어가도록 보강했다. `SimulationService._build_rationale()`는 A* 경로 길이, 예상 비용, 거리 비용, 공사비 비용, 환경·정책 리스크, counterfactual 개선분을 한 문장 흐름으로 설명하도록 정리했다. UI는 변경하지 않았다.
+- 수정 파일: `src/engine/search/astar_router.py`, `src/engine/search/score_function.py`, `src/services/simulation_service.py`, `tests/test_simulation_route_score.py`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m pytest tests/test_simulation_route_score.py -q` -> 6개 통과
+  - `.venv310/bin/python -m pytest tests -q` -> 27개 통과
+  - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
+  - `.venv310/bin/python -c "from src.services.simulation_service import SimulationService; svc=SimulationService(); r=svc.run_simulation(svc.build_default_input(load_scale=1.0)); print(r.source, r.fallback.mode); [print(rec.rank, rec.candidate_id, rec.score.total_score, rec.score.notes[-2:], rec.rationale) for rec in r.recommendations]"` -> `astar none`, `SITE_SOUTH` 1순위와 counterfactual 개선 근거 출력 확인
+  - `.venv310/bin/python -c "import runpy; runpy.run_path('pages/02_simulation.py'); print('simulation-page-run-ok')"` -> 통과, Streamlit bare-mode 경고만 확인
+- 다음 작업: 박차오름 4주차 우선순위 3으로 넘어가 `VWorld` 최소 계약과 `map_2_5d` fallback 판단을 코드/문서에 고정한다.
+
+### 2026-05-11 박차오름 4주차 우선순위 2 세부 평가 지표 UI 연결 완료
+- 작업: `pages/02_simulation.py`의 `세부 평가 지표 보기` expander 내부만 보강했다. 기존에는 혼잡 완화, 공사비, 환경, 정책 일부 항목만 막대로 보였으나, 이제 `ScoreBreakdown`의 기본 점수, 혼잡 완화 보상, 거리 비용, 공사비 비용, 환경 리스크, 정책 리스크, 최종 총점이 모두 표와 지표로 표시된다. 또한 A* 경로 요약과 `ScoreBreakdown.notes` 전체를 같은 expander 안에 출력해 서비스/엔진에서 만든 산정 근거가 UI까지 이어지게 했다. 페이지 전체 레이아웃, 지도, 저장/불러오기 UI는 건드리지 않았다.
+- 수정 파일: `pages/02_simulation.py`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
+  - `.venv310/bin/python -c "import runpy; runpy.run_path('pages/02_simulation.py'); print('simulation-page-run-ok')"` -> 통과, Streamlit bare-mode 경고만 확인
+  - `.venv310/bin/python -m pytest tests/test_simulation_route_score.py -q` -> 6개 통과
+  - `.venv310/bin/python -m pytest tests -q` -> 27개 통과
+- 다음 작업: 박차오름 4주차 우선순위 3으로 넘어가기 전에 필요하면 이 UI 변경까지 포함한 커밋 메시지를 정리한다.
+
+### 2026-05-11 박차오름 4주차 우선순위 3 VWorld 최소 계약 및 map_2_5d fallback 판단 완료
+- 작업: `src/data/adapters/vworld_adapter.py`에 VWorld WebGL 연결 준비용 최소 계약을 구현했다. `VWORLD_API_KEY`는 기존 `settings.py` 설정을 통해 읽고, `build_webgl_script_url()`이 `https://map.vworld.kr/js/webglMapInit.js.do?version=3.0&apiKey=...` 형식의 script URL을 만든다. `domain=localhost:8501` 같은 도메인 파라미터도 query parameter로 붙일 수 있게 했다. `get_map_capability()`는 키가 없으면 `FallbackInfo(mode="map_2_5d")`를 반환하고, 키가 있어도 MVP에서 WebGL 3D 검증을 보류할 경우 `prefer_webgl=False`로 Folium/2.5D fallback 판단을 명시할 수 있게 했다. API key 값은 warning/fallback reason에 노출하지 않는다. `docs/map_feasibility_2026-04-09.md`에는 현재 MVP 판단을 `2.5D/Folium 유지 + VWorld WebGL 연결 준비`로 최신화했다.
+- 수정 파일: `src/data/adapters/vworld_adapter.py`, `tests/test_vworld_adapter.py`, `docs/map_feasibility_2026-04-09.md`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m pytest tests/test_vworld_adapter.py -q` -> 7개 통과
+  - `.venv310/bin/python -m pytest tests -q` -> 34개 통과
+  - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
+  - `.venv310/bin/python -c "from src.data.adapters.vworld_adapter import get_map_capability; c=get_map_capability(domain='localhost:8501', prefer_webgl=False); print(c.rendering_mode, c.fallback.mode, bool(c.webgl_script_url))"` -> `map_2_5d map_2_5d True`
+- 다음 작업: 박차오름 4주차 우선순위 4로 넘어가 Monitoring actual → Simulation actual → Prediction mock/baseline 흐름의 공통 `scenario_id`, `source`, `fallback`, `warnings` 계약을 통합 테스트로 고정한다.
+
+### 2026-05-11 박차오름 4주차 우선순위 4 서비스 통합 계약 테스트 완료
+- 작업: `Monitoring actual -> Simulation actual -> Prediction baseline/mock` 흐름이 같은 `ScenarioContext`를 유지하는지 통합 테스트로 고정했다. 새 테스트는 공통 `scenario_id`, 허용 `source`, 허용 `fallback.mode`, fallback 사용 시 `reason/primary_path/active_path/warnings` 존재 여부, Monitoring `dc_power_flow`, Simulation `astar`, Prediction `baseline` happy path를 함께 검증한다. 또한 Monitoring DC 실패, Simulation A* 실패, Prediction hybrid branch 실패를 monkeypatch로 강제해 전체 예외 대신 mock/baseline fallback 결과가 반환되는 smoke test를 추가했다. 이 과정에서 fallback 경로의 첫 warning 문구가 공통 규칙을 따르도록 Monitoring/Simulation 예외 경로의 삽입 위치를 보정했고, Prediction actual 결과는 `PredictionService는 현재 <source> 결과를 반환합니다.` source warning을 갖도록 정리했다.
+- 수정 파일: `tests/test_service_integration_contract.py`, `src/services/monitoring_service.py`, `src/services/simulation_service.py`, `src/services/prediction_service.py`, `tests/test_prediction_risk_and_fallback.py`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m pytest tests/test_service_integration_contract.py -q` -> 5개 통과
+  - `.venv310/bin/python -m pytest tests/test_prediction_risk_and_fallback.py -q` -> 4개 통과
+  - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
+  - `.venv310/bin/python -m pytest tests -q` -> 39개 통과
+- 다음 작업: 박차오름 범위에서는 통합 병목이 닫혔으므로, 후속으로는 Beta가 `ScenarioService` 저장/불러오기 UI를 붙일 때 새 통합 테스트 계약을 깨지 않는지 확인한다. 별도 요청이 있으면 Priority 5의 overlay 데이터 계약과 fallback 문구 잔여 불일치를 이어서 정리한다.
+
+### 2026-05-11 박차오름 4주차 우선순위 5 공통 overlay 계약 정리 완료
+- 작업: Alpha/Beta가 지도와 표를 동기화할 수 있도록 UI 구현 없이 공통 overlay 계약을 추가했다. `src/data/schemas.py`에 `MapOverlayPoint`, `MapOverlayLine`, `MapOverlayRoute`, `MapOverlayResult`를 정의해 버스, 선로, 송전탑 후보지, A* 추천 경로, 예측 위험 선로를 같은 형태로 넘길 수 있게 했다. `MapOverlayService`는 Monitoring actual 선로 상태, Simulation 후보지/추천 경로, Prediction 위험 선로를 overlay 결과로 변환하며, 좌표는 `EPSG:4326`과 `elevation_m` 슬롯을 유지한다. 고도는 아직 조회하지 않으므로 warning에 남기고, VWorld WebGL을 쓰지 못하거나 MVP에서 보류할 때는 `map_2_5d` fallback을 overlay 결과에 반영한다. API key 값은 overlay warnings/fallback reason에 노출하지 않도록 테스트로 고정했다.
+- 수정 파일: `src/data/schemas.py`, `src/services/map_overlay_service.py`, `tests/test_map_overlay_contract.py`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m pytest tests/test_map_overlay_contract.py -q` -> 4개 통과
+  - `.venv310/bin/python -m pytest tests/test_service_integration_contract.py -q` -> 5개 통과
+  - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
+  - `.venv310/bin/python -m pytest tests -q` -> 43개 통과
+- 다음 작업: 박차오름 4주차 범위는 완료로 보고, Alpha는 Monitoring 표/지도 동기화에 `MapOverlayResult.lines`의 `line_id`를 사용하고, Beta는 Simulation 지도 레이어에 `MapOverlayResult.points/routes`를 연결하면 된다. Gamma의 예측 품질과 LSTM slow/integration 테스트는 별도 범위로 남긴다.

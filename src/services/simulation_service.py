@@ -215,7 +215,7 @@ class SimulationService:
                 created_at=resolved_at,
             )
             fallback_result.warnings.insert(
-                0,
+                1,
                 f"A* route/score 실패 → mock fallback 전환. 원인: {exc}",
             )
             fallback_result.fallback = build_fallback_info(
@@ -344,7 +344,12 @@ class SimulationService:
                 candidate_label=str(candidate["label"]),
                 route=route,
                 score=score,
-                rationale=self._build_rationale(simulation_input, candidate, score),
+                rationale=self._build_rationale(
+                    simulation_input,
+                    candidate,
+                    score,
+                    route=route,
+                ),
             )
 
             impact: CandidateImpactInput | None = None
@@ -378,6 +383,7 @@ class SimulationService:
                         candidate,
                         score,
                         impact=impact,
+                        route=route,
                     ),
                 )
             )
@@ -554,23 +560,35 @@ class SimulationService:
         score: ScoreBreakdown,
         *,
         impact: CandidateImpactInput | None = None,
+        route: RouteResult | None = None,
     ) -> str:
+        route_text = (
+            f" A* 경로 길이는 {route.total_distance_km:.1f}km, "
+            f"예상 비용은 {route.estimated_cost:.1f}로 계산됩니다."
+            if route is not None
+            else ""
+        )
+        risk_cost = score.environmental_risk + score.policy_risk
         if impact is not None:
             peak = max(0.0, impact.peak_utilization_improvement)
             risk = max(0.0, impact.risk_line_reduction)
             losses = max(0.0, impact.loss_reduction_mw)
             margin = max(0.0, impact.operating_margin_gain)
             return (
-                f"{candidate['label']}은 최대 이용률을 {peak:.1f}%p 낮추고 "
-                f"위험 선로를 {risk:.1f}개 줄이는 counterfactual 계산 결과를 반영합니다. "
-                f"손실 {losses:.1f} MW 감소와 운영 여유도 {margin:.1f}%p 증가까지 고려해 "
-                f"혼잡 완화 점수 {score.congestion_relief:.1f}를 확보하는 안입니다."
+                f"{candidate['label']}은 counterfactual 계산에서 최대 이용률을 {peak:.1f}%p 낮추고 "
+                f"위험 선로를 {risk:.1f}개 줄였습니다. 손실 {losses:.1f} MW 감소와 "
+                f"운영 여유도 {margin:.1f}%p 증가를 반영해 혼잡 완화 점수 "
+                f"{score.congestion_relief:.1f}를 확보합니다.{route_text} "
+                f"총점은 거리 비용 {score.distance_cost:.1f}, 공사비 비용 "
+                f"{score.construction_cost:.1f}, 환경·정책 리스크 {risk_cost:.1f}를 "
+                f"함께 비교해 산정했습니다."
             )
 
         return (
             f"{candidate['label']}은 부하 배율 {simulation_input.load_scale:.0%} 기준으로 "
-            f"혼잡 완화 점수 {score.congestion_relief:.1f}를 확보하면서 "
-            f"환경·정책 리스크를 상대적으로 낮게 유지하는 안입니다."
+            f"혼잡 완화 점수 {score.congestion_relief:.1f}를 확보하는 안입니다.{route_text} "
+            f"거리 비용 {score.distance_cost:.1f}, 공사비 비용 {score.construction_cost:.1f}, "
+            f"환경·정책 리스크 {risk_cost:.1f}를 함께 반영했습니다."
         )
 
     def _build_mock_deltas(
