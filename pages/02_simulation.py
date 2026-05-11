@@ -6,7 +6,7 @@ import streamlit as st
 import folium
 from streamlit_folium import st_folium
 
-from src.data.schemas import ScenarioContext, SimulationResult
+from src.data.schemas import ScenarioContext, ScoreBreakdown, SimulationResult
 from src.engine.powerflow.dc_power_flow import solve, build_default_buses, build_default_line_inputs
 from src.services.simulation_service import SimulationService
 
@@ -69,6 +69,68 @@ def _build_recommendation_rows(sim_result: SimulationResult) -> list[dict]:
             "경로 소스": route.source if route else "-",
         })
     return rows
+
+def _score_progress_value(value: float, maximum: float) -> float:
+    if maximum <= 0:
+        return 0.0
+    return max(0.0, min(value / maximum, 1.0))
+
+def _format_score_impact(value: float) -> str:
+    return f"+{value:.1f}" if value >= 0 else f"{value:.1f}"
+
+def _build_score_detail_rows(score: ScoreBreakdown) -> list[dict]:
+    base_score = 100.0
+    return [
+        {
+            "구분": "기준",
+            "세부 항목": "기본 점수",
+            "원점수": round(base_score, 1),
+            "총점 반영": _format_score_impact(base_score),
+            "설명": "모든 후보에 동일하게 적용되는 기준점",
+        },
+        {
+            "구분": "보상",
+            "세부 항목": "혼잡 완화 보상",
+            "원점수": round(score.congestion_relief, 1),
+            "총점 반영": _format_score_impact(score.congestion_relief),
+            "설명": "부하 보정, 경로 안정성, counterfactual 개선 효과",
+        },
+        {
+            "구분": "비용",
+            "세부 항목": "거리 비용",
+            "원점수": round(score.distance_cost, 1),
+            "총점 반영": f"-{score.distance_cost:.1f}",
+            "설명": "A* 경로 길이와 기준거리 초과분",
+        },
+        {
+            "구분": "비용",
+            "세부 항목": "공사비 비용",
+            "원점수": round(score.construction_cost, 1),
+            "총점 반영": f"-{score.construction_cost:.1f}",
+            "설명": "거리 기반 예상 공사비와 후보지 보정 비용",
+        },
+        {
+            "구분": "비용",
+            "세부 항목": "환경 리스크",
+            "원점수": round(score.environmental_risk, 1),
+            "총점 반영": f"-{score.environmental_risk:.1f}",
+            "설명": "산지, 보호구역, 민감 지역 등 환경 부담",
+        },
+        {
+            "구분": "비용",
+            "세부 항목": "정책 리스크",
+            "원점수": round(score.policy_risk, 1),
+            "총점 반영": f"-{score.policy_risk:.1f}",
+            "설명": "인허가, 수용성, 정책 제약 부담",
+        },
+        {
+            "구분": "결과",
+            "세부 항목": "최종 총점",
+            "원점수": round(score.total_score, 1),
+            "총점 반영": f"{score.total_score:.1f}",
+            "설명": "기본 점수 + 보상 - 비용 합계",
+        },
+    ]
 
 def _format_route_nodes(sim_result: SimulationResult) -> str:
     route = sim_result.selected_route
@@ -242,17 +304,46 @@ if st.session_state.sim_run:
             
             with st.expander(f"세부 평가 지표 보기 (총점: {top_rec.score.total_score:.1f}점)", expanded=True):
                 sc = top_rec.score
-                st.caption(f"혼잡 완화 기여도 ({sc.congestion_relief:.1f}점)")
-                st.progress(min(sc.congestion_relief / 50.0, 1.0)) 
-                
-                st.caption(f"건설 비용 효율성 ({sc.construction_cost:.1f}점)")
-                st.progress(min(sc.construction_cost / 30.0, 1.0)) 
-                
-                st.caption(f"환경 리스크 안정성 ({sc.environmental_risk:.1f}점)")
-                st.progress(min(sc.environmental_risk / 10.0, 1.0))
-                
-                st.caption(f"정책 부합성 ({sc.policy_risk:.1f}점)")
-                st.progress(min(sc.policy_risk / 10.0, 1.0))
+                cost_total = (
+                    sc.distance_cost
+                    + sc.construction_cost
+                    + sc.environmental_risk
+                    + sc.policy_risk
+                )
+                score_cols = st.columns(4)
+                score_cols[0].metric("기본 점수", "100.0점")
+                score_cols[1].metric("혼잡 완화 보상", f"+{sc.congestion_relief:.1f}점")
+                score_cols[2].metric("비용 합계", f"-{cost_total:.1f}점")
+                score_cols[3].metric("최종 총점", f"{sc.total_score:.1f}점")
+
+                st.dataframe(
+                    pd.DataFrame(_build_score_detail_rows(sc)),
+                    width="stretch",
+                    hide_index=True,
+                )
+
+                st.caption(f"혼잡 완화 보상 (+{sc.congestion_relief:.1f}점)")
+                st.progress(_score_progress_value(sc.congestion_relief, 60.0))
+
+                st.caption(f"거리 비용 (-{sc.distance_cost:.1f}점)")
+                st.progress(_score_progress_value(sc.distance_cost, 35.0))
+
+                st.caption(f"공사비 비용 (-{sc.construction_cost:.1f}점)")
+                st.progress(_score_progress_value(sc.construction_cost, 35.0))
+
+                st.caption(f"환경 리스크 (-{sc.environmental_risk:.1f}점)")
+                st.progress(_score_progress_value(sc.environmental_risk, 15.0))
+
+                st.caption(f"정책 리스크 (-{sc.policy_risk:.1f}점)")
+                st.progress(_score_progress_value(sc.policy_risk, 15.0))
+
+                if top_rec.route and top_rec.route.summary:
+                    st.caption(f"A* 경로 요약: {top_rec.route.summary}")
+
+                if sc.notes:
+                    st.markdown("**점수 산정 근거**")
+                    for note in sc.notes:
+                        st.caption(f"- {note}")
 
     # --- 팀원들이 만든 하단 데이터 표 영역 ---
     st.divider()

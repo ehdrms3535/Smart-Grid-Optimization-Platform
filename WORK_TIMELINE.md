@@ -439,3 +439,24 @@
   - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
   - `.venv310/bin/python -c "from datetime import datetime; from tempfile import TemporaryDirectory; from pathlib import Path; from src.data.schemas import ScenarioContext; from src.services.scenario_service import ScenarioService; d=TemporaryDirectory(); svc=ScenarioService(Path(d.name)/'scenarios.json'); s=ScenarioContext(scenario_id='demo', title='Demo', created_at=datetime(2026,1,1)); svc.save_scenario(s); print(svc.load_scenario('demo').scenario_id, len(svc.list_scenarios()))"` -> `demo 1`
 - 다음 작업: 박차오름 4주차 우선순위 2로 넘어가 A* 비용 함수와 추천 점수 설명 가능성을 보정한다. Beta가 UI를 붙일 때는 `ScenarioService.save_scenario()`, `list_scenarios()`, `load_scenario()`를 사용하면 된다.
+
+### 2026-05-11 박차오름 4주차 우선순위 2 A* 비용/점수 설명 보정 완료
+- 작업: A* 경로 보정과 추천 점수화가 발표 가능한 기준으로 설명되도록 정리했다. `astar_router.py`의 우회 거리, 릴레이 홉, 반복 노드, 고부하, 예상 비용 계수를 이름 있는 정책 상수로 분리하고, `RouteResult.summary`에 실제 거리/우회/릴레이/반복/고부하 패널티를 함께 반영한다는 설명을 남겼다. `score_function.py`는 총점 산식, 경로 입력, 비용 반영, 혼잡 보상, counterfactual 개선 근거가 `ScoreBreakdown.notes`에 나뉘어 들어가도록 보강했다. `SimulationService._build_rationale()`는 A* 경로 길이, 예상 비용, 거리 비용, 공사비 비용, 환경·정책 리스크, counterfactual 개선분을 한 문장 흐름으로 설명하도록 정리했다. UI는 변경하지 않았다.
+- 수정 파일: `src/engine/search/astar_router.py`, `src/engine/search/score_function.py`, `src/services/simulation_service.py`, `tests/test_simulation_route_score.py`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m pytest tests/test_simulation_route_score.py -q` -> 6개 통과
+  - `.venv310/bin/python -m pytest tests -q` -> 27개 통과
+  - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
+  - `.venv310/bin/python -c "from src.services.simulation_service import SimulationService; svc=SimulationService(); r=svc.run_simulation(svc.build_default_input(load_scale=1.0)); print(r.source, r.fallback.mode); [print(rec.rank, rec.candidate_id, rec.score.total_score, rec.score.notes[-2:], rec.rationale) for rec in r.recommendations]"` -> `astar none`, `SITE_SOUTH` 1순위와 counterfactual 개선 근거 출력 확인
+  - `.venv310/bin/python -c "import runpy; runpy.run_path('pages/02_simulation.py'); print('simulation-page-run-ok')"` -> 통과, Streamlit bare-mode 경고만 확인
+- 다음 작업: 박차오름 4주차 우선순위 3으로 넘어가 `VWorld` 최소 계약과 `map_2_5d` fallback 판단을 코드/문서에 고정한다.
+
+### 2026-05-11 박차오름 4주차 우선순위 2 세부 평가 지표 UI 연결 완료
+- 작업: `pages/02_simulation.py`의 `세부 평가 지표 보기` expander 내부만 보강했다. 기존에는 혼잡 완화, 공사비, 환경, 정책 일부 항목만 막대로 보였으나, 이제 `ScoreBreakdown`의 기본 점수, 혼잡 완화 보상, 거리 비용, 공사비 비용, 환경 리스크, 정책 리스크, 최종 총점이 모두 표와 지표로 표시된다. 또한 A* 경로 요약과 `ScoreBreakdown.notes` 전체를 같은 expander 안에 출력해 서비스/엔진에서 만든 산정 근거가 UI까지 이어지게 했다. 페이지 전체 레이아웃, 지도, 저장/불러오기 UI는 건드리지 않았다.
+- 수정 파일: `pages/02_simulation.py`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
+  - `.venv310/bin/python -c "import runpy; runpy.run_path('pages/02_simulation.py'); print('simulation-page-run-ok')"` -> 통과, Streamlit bare-mode 경고만 확인
+  - `.venv310/bin/python -m pytest tests/test_simulation_route_score.py -q` -> 6개 통과
+  - `.venv310/bin/python -m pytest tests -q` -> 27개 통과
+- 다음 작업: 박차오름 4주차 우선순위 3으로 넘어가기 전에 필요하면 이 UI 변경까지 포함한 커밋 메시지를 정리한다.

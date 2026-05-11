@@ -8,6 +8,25 @@ import math
 from src.data.schemas import RoutePoint, RouteResult
 
 
+# ── A* 비용 정책 상수 ────────────────────────────────────────────────────────
+# 보정 거리 = 실제 탐색 거리 + 우회/릴레이/반복/고부하 패널티.
+# 실제 경로 길이는 지도 표시와 거리 비용에 쓰고, 보정 거리는 direct/via 선택과
+# 예상 비용 산정에 사용해 비현실적인 우회·루프 경로를 낮게 평가한다.
+MOCK_LOAD_DISTANCE_PENALTY_KM = 6.0
+MOCK_HUB_DISTANCE_PENALTY_KM = 3.5
+MOCK_ROUTE_COST_DISTANCE_FACTOR = 0.42
+MOCK_ROUTE_COST_CONSTRUCTION_FACTOR = 4.8
+
+LOAD_SCALE_TRAVERSAL_COST_FACTOR = 0.15
+DETOUR_DISTANCE_PENALTY_FACTOR = 0.8
+RELAY_HOP_DISTANCE_PENALTY_KM = 6.0
+REPEATED_NODE_DISTANCE_PENALTY_KM = 40.0
+LOAD_SCALE_DISTANCE_PENALTY_KM = 12.0
+ROUTE_COST_DISTANCE_FACTOR = 0.44
+ROUTE_COST_CONSTRUCTION_FACTOR = 4.6
+ROUTE_COST_REPEATED_NODE_PENALTY = 3.5
+
+
 @dataclass(frozen=True)
 class BusNodeSpec:
     """탐색 엔진이 경로 계산에 사용하는 최소 버스 정보."""
@@ -87,11 +106,12 @@ def build_mock_route(
         ]
     )
 
-    scale_penalty = max(0.0, load_scale - 1.0) * 6.0
-    hub_penalty = 3.5 if via_bus is not None else 0.0
+    scale_penalty = max(0.0, load_scale - 1.0) * MOCK_LOAD_DISTANCE_PENALTY_KM
+    hub_penalty = MOCK_HUB_DISTANCE_PENALTY_KM if via_bus is not None else 0.0
     total_distance_km = round(candidate.base_distance_km + hub_penalty + scale_penalty, 1)
     estimated_cost = round(
-        (total_distance_km * 0.42) + (candidate.construction_cost * 4.8),
+        (total_distance_km * MOCK_ROUTE_COST_DISTANCE_FACTOR)
+        + (candidate.construction_cost * MOCK_ROUTE_COST_CONSTRUCTION_FACTOR),
         1,
     )
 
@@ -227,6 +247,9 @@ def build_astar_route(
     summary_parts.append(
         f"{candidate.candidate_label} 후보지 경유 A* 보정 경로입니다."
     )
+    summary_parts.append(
+        "거리 보정은 실제 거리, 우회 거리, 릴레이 홉, 반복 노드, 고부하 패널티를 함께 반영합니다."
+    )
     if selected_variant.repeated_node_count > 0:
         summary_parts.append("반복 노드 패널티를 반영해 루프 경로를 배제했습니다.")
 
@@ -319,7 +342,7 @@ def _build_adjacency(
         node_id: [] for node_id in route_nodes
     }
 
-    scale_factor = 1.0 + max(0.0, load_scale - 1.0) * 0.15
+    scale_factor = 1.0 + max(0.0, load_scale - 1.0) * LOAD_SCALE_TRAVERSAL_COST_FACTOR
 
     for edge in edges:
         if edge.from_node_id not in route_nodes or edge.to_node_id not in route_nodes:
@@ -489,9 +512,13 @@ def _estimate_route_cost(
     construction_cost: float,
     repeated_node_count: int,
 ) -> float:
-    repeat_penalty = repeated_node_count * 3.5
+    repeat_penalty = repeated_node_count * ROUTE_COST_REPEATED_NODE_PENALTY
     distance_basis = max(total_distance_km, calibrated_distance_km)
-    estimated_cost = (distance_basis * 0.44) + (construction_cost * 4.6) + repeat_penalty
+    estimated_cost = (
+        (distance_basis * ROUTE_COST_DISTANCE_FACTOR)
+        + (construction_cost * ROUTE_COST_CONSTRUCTION_FACTOR)
+        + repeat_penalty
+    )
     return round(estimated_cost, 1)
 
 
@@ -504,12 +531,12 @@ def _calibrate_route_distance(
     load_scale: float,
 ) -> float:
     detour_km = max(0.0, total_distance_km - straight_line_distance_km)
-    relay_penalty_km = relay_hop_count * 6.0
-    repeated_penalty_km = repeated_node_count * 40.0
-    load_penalty_km = max(0.0, load_scale - 1.0) * 12.0
+    relay_penalty_km = relay_hop_count * RELAY_HOP_DISTANCE_PENALTY_KM
+    repeated_penalty_km = repeated_node_count * REPEATED_NODE_DISTANCE_PENALTY_KM
+    load_penalty_km = max(0.0, load_scale - 1.0) * LOAD_SCALE_DISTANCE_PENALTY_KM
     return (
         total_distance_km
-        + (detour_km * 0.8)
+        + (detour_km * DETOUR_DISTANCE_PENALTY_FACTOR)
         + relay_penalty_km
         + repeated_penalty_km
         + load_penalty_km

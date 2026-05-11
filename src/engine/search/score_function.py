@@ -6,6 +6,11 @@ from dataclasses import dataclass, replace
 from src.data.schemas import RecommendationResult, RouteResult, ScoreBreakdown
 
 
+# 총점 정책:
+# 100점 기준점에서 시작해 혼잡 완화 보상은 더하고, 거리·공사비·환경·정책
+# 비용은 뺀다. 고부하 시나리오에서는 load_scale bonus를 통해 혼잡 완화
+# 후보를 더 높게 평가하고, counterfactual delta가 있으면 실제 DC Power Flow
+# 개선분을 추가 보상한다.
 DISTANCE_COST_FACTOR = 0.58
 CONSTRUCTION_COST_FACTOR = 1.85
 ENVIRONMENTAL_RISK_FACTOR = 2.2
@@ -78,7 +83,7 @@ def calculate_score(
     route: RouteResult | None = None,
     impact: CandidateImpactInput | None = None,
 ) -> ScoreBreakdown:
-    """2주차용 실제 route 반영 점수 계산 함수."""
+    """A* route와 counterfactual 개선분을 반영한 추천 점수를 계산한다."""
 
     resolved_distance_km = _resolve_distance_km(score_input, route)
     distance_gap_penalty = max(0.0, resolved_distance_km - score_input.distance_km)
@@ -111,19 +116,21 @@ def calculate_score(
     )
     policy_risk = round(score_input.policy_risk * POLICY_RISK_FACTOR, 1)
 
+    route_source = route.source if route is not None else "candidate baseline"
     notes = [
-        "현재 점수는 보정된 A* 경로 기준 가중치로 계산됩니다.",
+        "총점 산식: 100점 + 혼잡 완화 보상 - 거리/공사비/환경/정책 비용입니다.",
         (
-            f"사용 거리 {resolved_distance_km:.1f}km"
-            + (
-                f" (route source: {route.source})"
-                if route is not None
-                else " (candidate baseline)"
-            )
+            f"경로 입력: {resolved_distance_km:.1f}km, source={route_source}, "
+            f"후보 기준거리 대비 초과 {distance_gap_penalty:.1f}km."
         ),
         (
-            "비용 요소: 거리 0.58(10km 단위), 거리 초과 패널티 0.22(10km 단위), 공사비 1.85, "
-            "환경 2.2, 정책 2.0, 부하 보정 18.0, route bonus 4.0"
+            f"비용 반영: 거리 {distance_cost:.1f}점, 공사비 {construction_cost:.1f}점, "
+            f"환경 리스크 {environmental_risk:.1f}점, 정책 리스크 {policy_risk:.1f}점."
+        ),
+        (
+            f"혼잡 보상: 기본 {score_input.congestion_relief:.1f}점 + "
+            f"부하 보정 {load_bonus:.1f}점 + 경로 안정성 {route_bonus:.1f}점 + "
+            f"counterfactual {counterfactual_bonus:.1f}점 = {congestion_relief:.1f}점."
         ),
     ]
     if impact is not None:
@@ -137,6 +144,8 @@ def calculate_score(
             ),
             f"counterfactual bonus {counterfactual_bonus:.1f}점 반영",
         ])
+    else:
+        notes.append("counterfactual 개선분이 없어 실제 설치 후 delta bonus는 0.0점입니다.")
 
     return _build_score_breakdown(
         distance_cost=distance_cost,
