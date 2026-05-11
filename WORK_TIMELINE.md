@@ -460,3 +460,13 @@
   - `.venv310/bin/python -m pytest tests/test_simulation_route_score.py -q` -> 6개 통과
   - `.venv310/bin/python -m pytest tests -q` -> 27개 통과
 - 다음 작업: 박차오름 4주차 우선순위 3으로 넘어가기 전에 필요하면 이 UI 변경까지 포함한 커밋 메시지를 정리한다.
+
+### 2026-05-11 박차오름 4주차 우선순위 3 VWorld 최소 계약 및 map_2_5d fallback 판단 완료
+- 작업: `src/data/adapters/vworld_adapter.py`에 VWorld WebGL 연결 준비용 최소 계약을 구현했다. `VWORLD_API_KEY`는 기존 `settings.py` 설정을 통해 읽고, `build_webgl_script_url()`이 `https://map.vworld.kr/js/webglMapInit.js.do?version=3.0&apiKey=...` 형식의 script URL을 만든다. `domain=localhost:8501` 같은 도메인 파라미터도 query parameter로 붙일 수 있게 했다. `get_map_capability()`는 키가 없으면 `FallbackInfo(mode="map_2_5d")`를 반환하고, 키가 있어도 MVP에서 WebGL 3D 검증을 보류할 경우 `prefer_webgl=False`로 Folium/2.5D fallback 판단을 명시할 수 있게 했다. API key 값은 warning/fallback reason에 노출하지 않는다. `docs/map_feasibility_2026-04-09.md`에는 현재 MVP 판단을 `2.5D/Folium 유지 + VWorld WebGL 연결 준비`로 최신화했다.
+- 수정 파일: `src/data/adapters/vworld_adapter.py`, `tests/test_vworld_adapter.py`, `docs/map_feasibility_2026-04-09.md`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m pytest tests/test_vworld_adapter.py -q` -> 7개 통과
+  - `.venv310/bin/python -m pytest tests -q` -> 34개 통과
+  - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
+  - `.venv310/bin/python -c "from src.data.adapters.vworld_adapter import get_map_capability; c=get_map_capability(domain='localhost:8501', prefer_webgl=False); print(c.rendering_mode, c.fallback.mode, bool(c.webgl_script_url))"` -> `map_2_5d map_2_5d True`
+- 다음 작업: 박차오름 4주차 우선순위 4로 넘어가 Monitoring actual → Simulation actual → Prediction mock/baseline 흐름의 공통 `scenario_id`, `source`, `fallback`, `warnings` 계약을 통합 테스트로 고정한다.
