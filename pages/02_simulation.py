@@ -1,9 +1,12 @@
 from __future__ import annotations
+from datetime import datetime
+
+import pandas as pd
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
 
-# 오름님의 엔진 및 서비스 모듈 임포트
+from src.data.schemas import ScenarioContext, SimulationResult
 from src.engine.powerflow.dc_power_flow import solve, build_default_buses, build_default_line_inputs
 from src.services.simulation_service import SimulationService
 
@@ -15,6 +18,24 @@ def get_service():
     return SimulationService()
 
 sim_service = get_service()
+
+def _get_shared_scenario() -> ScenarioContext:
+    scenario = st.session_state.get("sgop_shared_scenario")
+    if isinstance(scenario, ScenarioContext):
+        return scenario
+
+    created_at = datetime.now().replace(minute=0, second=0, microsecond=0)
+    scenario = ScenarioContext(
+        scenario_id="sgop-demo-scenario",
+        title="SGOP Demo Scenario",
+        description="Monitoring, Simulation, Prediction이 공유하는 기본 시나리오",
+        region="South Korea",
+        created_at=created_at,
+        created_by="streamlit-session",
+    )
+    st.session_state.sgop_shared_scenario = scenario
+    return scenario
+
 bus_options = sim_service.list_bus_options()
 candidate_options = sim_service.list_candidate_options()
 
@@ -26,15 +47,39 @@ def get_congestion_color(flow_mw, capacity_mw):
     else: return "#22c55e" # 초록
 
 # --- 세션 상태(Session State) 초기화 ---
-# 버튼을 누르기 전과 후의 화면 상태를 기억하기 위해 사용합니다.
 if 'sim_run' not in st.session_state:
     st.session_state.sim_run = False
+
+def _build_recommendation_rows(sim_result: SimulationResult) -> list[dict]:
+    rows: list[dict] = []
+    for recommendation in sim_result.recommendations:
+        route = recommendation.route
+        score = recommendation.score
+        rows.append({
+            "순위": recommendation.rank,
+            "후보지": f"{recommendation.candidate_label} ({recommendation.candidate_id})",
+            "총점": round(score.total_score, 1) if score else None,
+            "경로 길이 (km)": round(route.total_distance_km, 1) if route else None,
+            "예상 비용": round(route.estimated_cost, 1) if route else None,
+            "혼잡 완화": round(score.congestion_relief, 1) if score else None,
+            "거리 비용": round(score.distance_cost, 1) if score else None,
+            "공사 비용": round(score.construction_cost, 1) if score else None,
+            "환경 리스크": round(score.environmental_risk, 1) if score else None,
+            "정책 리스크": round(score.policy_risk, 1) if score else None,
+            "경로 소스": route.source if route else "-",
+        })
+    return rows
+
+def _format_route_nodes(sim_result: SimulationResult) -> str:
+    route = sim_result.selected_route
+    if route is None or not route.path_node_ids:
+        return "-"
+    return " -> ".join(route.path_node_ids)
 
 # --- 2. 사이드바 입력창 (Form으로 묶어서 한 번에 실행!) ---
 with st.sidebar:
     st.header("⚡ 시뮬레이션 제어")
     
-    # st.form을 사용하면 'Submit' 버튼을 누르기 전까지는 값이 바뀌어도 앱이 재시작되지 않습니다.
     with st.form("simulation_form"):
         start_bus = st.selectbox("시작 버스", options=[b[0] for b in bus_options], format_func=lambda x: dict(bus_options)[x], index=0)
         end_bus = st.selectbox("종료 버스", options=[b[0] for b in bus_options], format_func=lambda x: dict(bus_options)[x], index=10)
@@ -48,29 +93,37 @@ with st.sidebar:
         
         load_scale = st.slider("시스템 전체 부하 배율", 0.5, 1.5, 1.0, 0.05)
         
-        # 🚀 실행 버튼
         submitted = st.form_submit_button("🚀 시뮬레이션 실행", type="primary", use_container_width=True)
 
 st.title("🗺️ 송전망 혼잡도 및 A* 최적 경로 시뮬레이션")
 
 # --- 3. 엔진 가동 (버튼을 눌렀을 때만 작동) ---
 if submitted:
-    # 계산하는 동안 뱅글뱅글 도는 로딩 애니메이션 표시
     with st.spinner("AI가 최적 경로 및 혼잡도를 계산 중입니다... 🔄"):
         buses = build_default_buses(load_scale=load_scale)
         lines = build_default_line_inputs()
         st.session_state.pf_result = solve(buses, lines)
 
+        shared_scenario = _get_shared_scenario()
+        shared_created_at = shared_scenario.created_at
+
         sim_input = sim_service.build_default_input(
+            scenario=shared_scenario,
+            created_at=shared_created_at,
             start_bus_id=start_bus, 
             end_bus_id=end_bus, 
             candidate_site_ids=selected_candidates, 
             load_scale=load_scale
         )
-        st.session_state.sim_result = sim_service.run_simulation(sim_input)
-        st.session_state.lines = lines # 지도 그리기 용도
+        sim_result = sim_service.run_simulation(
+            sim_input,
+            created_at=shared_created_at,
+        )
         
-        # 계산 완료 상태 저장
+        st.session_state.sim_result = sim_result
+        st.session_state.lines = lines 
+        st.session_state.sgop_shared_scenario = sim_result.scenario
+        st.session_state.selected_candidates = selected_candidates
         st.session_state.sim_run = True
 
 # --- 4. 화면 레이아웃 (계산 완료 상태일 때만 화면 렌더링) ---
@@ -78,6 +131,26 @@ if st.session_state.sim_run:
     pf_result = st.session_state.pf_result
     sim_result = st.session_state.sim_result
     lines = st.session_state.lines
+    selected_candidates = st.session_state.selected_candidates
+
+    # 팀원들이 추가한 안내 메시지 및 시나리오 캡션
+    if not selected_candidates:
+        st.warning("후보지가 비어 기본 후보지를 사용합니다.")
+
+    st.caption(
+        f"시나리오: {sim_result.scenario.scenario_id}  |  "
+        f"입력: {sim_result.simulation_input.start_bus_id} -> "
+        f"{sim_result.simulation_input.end_bus_id}  |  "
+        f"후보지 {len(sim_result.simulation_input.candidate_site_ids)}개  |  "
+        f"부하 배율 {sim_result.simulation_input.load_scale:.2f}x  |  "
+        f"소스: {sim_result.source.upper()}"
+    )
+
+    if sim_result.fallback.enabled:
+        st.warning(f"Fallback 사용 중: `{sim_result.fallback.mode}` | {sim_result.fallback.reason}")
+
+    for warning in sim_result.warnings:
+        st.caption(f"- {warning}")
 
     col_map, col_info = st.columns([2, 1])
 
@@ -95,7 +168,6 @@ if st.session_state.sim_run:
             "BUS_013": [35.1796, 129.0756]
         }
 
-        # 기존 혼잡망 그리기
         for line in lines:
             f_num = line.from_bus.replace('B', '')
             t_num = line.to_bus.replace('B', '')
@@ -110,7 +182,6 @@ if st.session_state.sim_run:
                     weight=4, opacity=0.4
                 ).add_to(m)
 
-        # 신규 A* 최적 경로 그리기
         if sim_result.selected_route and sim_result.selected_route.waypoints:
             route_coords = [[wp.latitude, wp.longitude] for wp in sim_result.selected_route.waypoints]
             
@@ -130,7 +201,6 @@ if st.session_state.sim_run:
                     color="#2563eb", fill=True, fill_color="#ffffff", fill_opacity=1.0
                 ).add_to(m)
 
-        # 범례 추가
         legend_html = '''
         <div style="position: fixed; 
              bottom: 30px; left: 30px; width: 170px; height: 135px; 
@@ -146,10 +216,10 @@ if st.session_state.sim_run:
         '''
         m.get_root().html.add_child(folium.Element(legend_html))
 
-        st_folium(m, width="100%", height=700, returned_objects=[])
+        st_folium(m, width="100%", height=650, returned_objects=[])
 
     with col_info:
-        # --- 설치 전/후 비교 카드 ---
+        # --- 설치 전/후 비교 카드 (나현님 코드) ---
         st.subheader("📊 설치 전/후 비교")
         if sim_result.deltas:
             for delta in sim_result.deltas:
@@ -163,23 +233,20 @@ if st.session_state.sim_run:
         
         st.divider()
 
-        # --- 🏆 신규: AI 1순위 추천 사유 및 세부 점수표 ---
+        # --- 🏆 AI 1순위 추천 사유 및 세부 점수표 (나현님 코드) ---
         if sim_result.recommendations:
             top_rec = sim_result.recommendations[0]
             st.subheader("🏆 AI 1순위 추천 분석")
             
-            # 추천 사유 박스
             st.success(f"**추천 사유:**\n{top_rec.rationale}")
             
-            # 세부 점수 아코디언 (접기/펴기)
             with st.expander(f"세부 평가 지표 보기 (총점: {top_rec.score.total_score:.1f}점)", expanded=True):
                 sc = top_rec.score
-                
                 st.caption(f"혼잡 완화 기여도 ({sc.congestion_relief:.1f}점)")
-                st.progress(min(sc.congestion_relief / 50.0, 1.0)) # 50점 만점 기준 스케일링
+                st.progress(min(sc.congestion_relief / 50.0, 1.0)) 
                 
                 st.caption(f"건설 비용 효율성 ({sc.construction_cost:.1f}점)")
-                st.progress(min(sc.construction_cost / 30.0, 1.0)) # 30점 만점 기준 스케일링
+                st.progress(min(sc.construction_cost / 30.0, 1.0)) 
                 
                 st.caption(f"환경 리스크 안정성 ({sc.environmental_risk:.1f}점)")
                 st.progress(min(sc.environmental_risk / 10.0, 1.0))
@@ -187,6 +254,20 @@ if st.session_state.sim_run:
                 st.caption(f"정책 부합성 ({sc.policy_risk:.1f}점)")
                 st.progress(min(sc.policy_risk / 10.0, 1.0))
 
+    # --- 팀원들이 만든 하단 데이터 표 영역 ---
+    st.divider()
+    st.subheader("📋 전체 후보지별 추천 결과 데이터")
+
+    recommendation_rows = _build_recommendation_rows(sim_result)
+    if recommendation_rows:
+        st.dataframe(
+            pd.DataFrame(recommendation_rows),
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.info("표시할 추천 결과가 없습니다.")
+
 else:
-    # 💡 버튼 누르기 전 초기 안내 화면
+    # 초기 안내 화면
     st.info("👈 좌측 사이드바에서 조건을 설정하고 **[🚀 시뮬레이션 실행]** 버튼을 눌러주세요.")
