@@ -429,3 +429,13 @@
   - `.venv310/bin/python -c "import runpy; runpy.run_path('pages/02_simulation.py'); print('simulation-page-run-ok')"` -> 통과, Streamlit bare-mode 경고 확인
   - `.venv310/bin/python -m pytest tests -q` -> 11개 통과
 - 다음 작업: Beta 3주차 범위의 시나리오 저장/불러오기 또는 `ScenarioService` 저장 책임 구현을 진행한다.
+
+### 2026-05-11 박차오름 4주차 우선순위 1 ScenarioService 최소 구현 완료
+- 작업: 박차오름 4주차 통합 로직 정리의 선행 작업으로 `ScenarioService` 저장 계층을 구현했다. 기본 저장 위치는 `data/private/scenarios.json`로 두고, 테스트 가능하도록 `storage_path` 주입을 지원한다. `ScenarioContext`를 JSON으로 저장/조회/목록화/삭제할 수 있게 했고, `created_at`은 ISO 문자열로 직렬화 후 복원한다. 같은 `scenario_id` 저장은 덮어쓰기 방식으로 처리하며, 빈 `scenario_id`, 잘못된 JSON 저장소, 잘못된 레코드는 명확한 예외를 내도록 정리했다. 페이지 UI 연결은 Beta 범위로 남기고 서비스 계약과 테스트만 닫았다.
+- 수정 파일: `src/services/scenario_service.py`, `tests/test_scenario_service.py`, `WORK_TIMELINE.md`
+- 검증:
+  - `.venv310/bin/python -m pytest tests/test_scenario_service.py -q` -> 10개 통과
+  - `.venv310/bin/python -m pytest tests -q` -> 21개 통과
+  - `.venv310/bin/python -m compileall app.py pages src tests` -> 통과
+  - `.venv310/bin/python -c "from datetime import datetime; from tempfile import TemporaryDirectory; from pathlib import Path; from src.data.schemas import ScenarioContext; from src.services.scenario_service import ScenarioService; d=TemporaryDirectory(); svc=ScenarioService(Path(d.name)/'scenarios.json'); s=ScenarioContext(scenario_id='demo', title='Demo', created_at=datetime(2026,1,1)); svc.save_scenario(s); print(svc.load_scenario('demo').scenario_id, len(svc.list_scenarios()))"` -> `demo 1`
+- 다음 작업: 박차오름 4주차 우선순위 2로 넘어가 A* 비용 함수와 추천 점수 설명 가능성을 보정한다. Beta가 UI를 붙일 때는 `ScenarioService.save_scenario()`, `list_scenarios()`, `load_scenario()`를 사용하면 된다.
