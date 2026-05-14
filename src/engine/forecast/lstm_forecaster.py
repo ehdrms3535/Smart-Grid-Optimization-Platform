@@ -106,14 +106,24 @@ class LSTMForecaster:
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df = df.sort_values(["bus_id", "timestamp"])
 
-        # ── train / test 시간 분리 ─────────────────────────────────────────────
+        # ── train / test 시간 분리 (매 5번째 주 → 테스트, 계절 균등 분포) ────────
         if test_split > 0.0:
             timestamps = sorted(df["timestamp"].unique())
-            split_idx = int(len(timestamps) * (1.0 - test_split))
-            split_ts = timestamps[split_idx]
-            train_df = df[df["timestamp"] < split_ts]
-            test_df  = df[df["timestamp"] >= split_ts]
-            print(f"[분할] 학습: ~ {split_ts}  |  테스트: {split_ts} ~ ({len(timestamps) - split_idx}h)")
+            # 주 단위(168h)로 묶어서 매 5번째 주를 테스트셋으로 분리
+            week_size = 168
+            n_weeks = len(timestamps) // week_size
+            test_week_indices = set(range(4, n_weeks, 5))  # 0,1,2,3,4 중 4번째
+            test_ts_set = set()
+            for w in test_week_indices:
+                start = w * week_size
+                end = min(start + week_size, len(timestamps))
+                test_ts_set.update(timestamps[start:end])
+
+            test_mask = df["timestamp"].isin(test_ts_set)
+            train_df = df[~test_mask]
+            test_df  = df[test_mask]
+            n_test_weeks = len(test_week_indices)
+            print(f"[분할] 매 5번째 주 테스트  |  학습: {len(train_df)//13:,}h  테스트: {len(test_df)//13:,}h ({n_test_weeks}주)")
         else:
             train_df = df
             test_df  = None
